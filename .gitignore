@@ -1,41 +1,41 @@
 
-# Python virtual environments
+# Python
 venv/
 .venv/
-env/
-
-# Python cache
 __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Uploaded documents and generated reports
+# Uploaded documents
 backend/uploads/
 uploads/
 reports/
-*.pdf
-*.jpg
-*.jpeg
-*.png
-*.webp
 
-# Environment variables and secrets
+# Secrets
 .env
 .env.*
 !.env.example
 
-# IDE settings
+# IDE
 .vscode/
 .idea/
 
-# Logs
-*.log
-
-# Frontend dependencies and builds
+# Frontend
 node_modules/
 dist/
 build/
 
-# Operating system
+# Logs and temporary files
+*.log
 .DS_Store
 Thumbs.db
+
+# Ignore images and PDFs by default
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.pdf
+
+# Allow the official project README banner
+!docs/scamscan-holographic-banner.png

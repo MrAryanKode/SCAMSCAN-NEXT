@@ -1,4 +1,12 @@
- <div align="center">
+<div align="center">
+  <img
+    src="docs/scamscan-holographic-banner.png"
+    width="100%"
+    alt="ScamScan 2.0 Holographic Banner"
+  />
+</div>
+
+<br/>
 
 # 🛡️ SCAMSCAN 2.0
 
