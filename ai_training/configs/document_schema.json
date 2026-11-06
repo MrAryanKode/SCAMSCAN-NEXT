@@ -1,0 +1,86 @@
+
+{
+  "project": "ScamScan 2.0",
+  "schema_version": "1.0.0",
+  "description": "Universal document intelligence dataset schema for document classification and entity extraction.",
+  "document_types": [
+    "identity",
+    "financial",
+    "academic",
+    "legal",
+    "travel",
+    "employment",
+    "medical",
+    "government",
+    "other"
+  ],
+  "entity_labels": [
+    "PERSON_NAME",
+    "ORGANIZATION",
+    "ADDRESS",
+    "DATE",
+    "DOCUMENT_NUMBER",
+    "REFERENCE_NUMBER",
+    "AMOUNT",
+    "CURRENCY",
+    "EMAIL",
+    "PHONE",
+    "IDENTIFIER",
+    "ACCOUNT_NUMBER",
+    "TAX_NUMBER",
+    "SIGNATURE",
+    "OTHER"
+  ],
+  "annotation_format": {
+    "document_id": "unique_document_id",
+    "document_type": "financial",
+    "source": "synthetic_or_authorized",
+    "pages": [
+      {
+        "page_number": 1,
+        "image_path": "processed/document_id/page_1.png",
+        "words": [
+          "Example",
+          "Company"
+        ],
+        "boxes": [
+          [50, 40, 200, 80],
+          [205, 40, 350, 80]
+        ],
+        "ner_tags": [
+          "B-ORGANIZATION",
+          "I-ORGANIZATION"
+        ]
+      }
+    ]
+  },
+  "bounding_box": {
+    "coordinate_system": "normalized",
+    "minimum": 0,
+    "maximum": 1000,
+    "format": "[x0, y0, x1, y1]"
+  },
+  "dataset_splits": [
+    "train",
+    "validation",
+    "test"
+  ],
+  "privacy": {
+    "allow_personal_documents": false,
+    "require_anonymization": true,
+    "allow_public_upload_of_training_data": false
+  },
+  "training": {
+    "base_model": "microsoft/layoutlmv3-base",
+    "tasks": [
+      "document_classification",
+      "named_entity_recognition"
+    ],
+    "evaluation_metrics": [
+      "accuracy",
+      "precision",
+      "recall",
+      "f1"
+    ]
+  }
+}

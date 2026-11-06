@@ -39,3 +39,7 @@ Thumbs.db
 
 # Allow the official project README banner
 !docs/scamscan-holographic-banner.png
+
+ai-venv/
+
+ai_training/dataset/
