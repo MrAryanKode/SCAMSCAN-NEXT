@@ -1,0 +1,41 @@
+
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Uploaded documents and generated reports
+backend/uploads/
+uploads/
+reports/
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# IDE settings
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Frontend dependencies and builds
+node_modules/
+dist/
+build/
+
+# Operating system
+.DS_Store
+Thumbs.db
