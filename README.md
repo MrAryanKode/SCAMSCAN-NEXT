@@ -1,147 +1,200 @@
 
 <div align="center">
 
-<img src="https://readme-typing-svg.demolab.com?font=Orbitron&weight=700&size=34&duration=2500&pause=900&color=00E5FF&center=true&vCenter=true&width=850&height=70&lines=SCAMSCAN+2.0;DIGITAL+TRUST+INTELLIGENCE;DOCUMENT+FORENSICS+ENGINE" alt="ScamScan animated title"/>
+<img src="https://readme-typing-svg.demolab.com?font=Orbitron&weight=900&size=48&duration=2200&pause=700&color=00E5FF&center=true&vCenter=true&width=950&height=100&lines=SCAMSCAN+2.0;DIGITAL+TRUST+INTELLIGENCE;FORENSICS+REIMAGINED" width="100%" alt="ScamScan animated title"/>
+
+<br/>
+
+<img src="https://img.shields.io/badge/◈_DIGITAL_TRUST-00D9FF?style=for-the-badge&labelColor=050914"/>
+<img src="https://img.shields.io/badge/◈_DOCUMENT_FORENSICS-168BFF?style=for-the-badge&labelColor=050914"/>
+<img src="https://img.shields.io/badge/◈_AI_INTELLIGENCE-8B5CF6?style=for-the-badge&labelColor=050914"/>
+
+<br/><br/>
+
+### 🛡️ THE NEXT GENERATION OF DIGITAL DOCUMENT INVESTIGATION
 
 <p>
-  <strong>◈ ANALYZE. INVESTIGATE. UNDERSTAND. ◈</strong>
-</p>
-
-<p>
-  An AI-powered Digital Trust & Document Forensics Platform
+  <i>Every document tells a story. We investigate what lies beneath.</i>
 </p>
 
 <br/>
 
-<img src="https://img.shields.io/badge/CORE- DOCUMENT%20INTELLIGENCE-00D9FF?style=for-the-badge&labelColor=050B18"/>
-<img src="https://img.shields.io/badge/ENGINE-FORENSICS-0077FF?style=for-the-badge&labelColor=050B18"/>
-<img src="https://img.shields.io/badge/STATUS-IN%20DEVELOPMENT-00C9A7?style=for-the-badge&labelColor=050B18"/>
+<a href="https://github.com/MrAryanKode/SCAMSCAN-NEXT">
+<img src="https://img.shields.io/github/stars/MrAryanKode/SCAMSCAN-NEXT?style=for-the-badge&logo=github&label=STARS&color=00D9FF"/>
+</a>
+<a href="https://github.com/MrAryanKode/SCAMSCAN-NEXT/commits/main">
+<img src="https://img.shields.io/github/last-commit/MrAryanKode/SCAMSCAN-NEXT?style=for-the-badge&logo=github&color=168BFF"/>
+</a>
+<a href="https://github.com/MrAryanKode/SCAMSCAN-NEXT/issues">
+<img src="https://img.shields.io/github/issues/MrAryanKode/SCAMSCAN-NEXT?style=for-the-badge&logo=github&color=8B5CF6"/>
+</a>
 
 <br/><br/>
 
-<a href="https://github.com/MrAryanKode/SCAMSCAN-NEXT">
-<img src="https://img.shields.io/github/stars/MrAryanKode/SCAMSCAN-NEXT?style=flat-square&color=00D9FF&label=STARS"/>
-</a>
-<a href="https://github.com/MrAryanKode/SCAMSCAN-NEXT/commits/main">
-<img src="https://img.shields.io/github/last-commit/MrAryanKode/SCAMSCAN-NEXT?style=flat-square&color=0077FF&label=LATEST%20UPDATE"/>
-</a>
-<a href="https://github.com/MrAryanKode/SCAMSCAN-NEXT/issues">
-<img src="https://img.shields.io/github/issues/MrAryanKode/SCAMSCAN-NEXT?style=flat-square&color=00C9A7"/>
-</a>
+<img src="https://capsule-render.vercel.app/api?type=rect&color=0:050914,50:071B35,100:003B59&height=3&section=header" width="100%"/>
 
 </div>
 
----
-
-## `01` — SYSTEM OVERVIEW
-
-**Digital documents can be manipulated. Their contents can be inconsistent. Their metadata can tell a different story.**
-
-ScamScan 2.0 is being developed to help investigate these characteristics through document extraction, consistency analysis and digital forensic techniques.
-
-Our vision is to transform unstructured documents into structured, explainable evidence.
-
-> We don't simply scan documents. We investigate their digital characteristics.
-
----
-
-## `02` — INTELLIGENCE MODULES
+<br/>
 
 <table>
 <tr>
-<td width="50%" valign="top">
+<td width="65%" valign="middle">
 
-### ◈ DOCUMENT INTELLIGENCE
+## 🌌 BEYOND DOCUMENT SCANNING
 
-- OCR text extraction
-- PDF text extraction
-- Structured information extraction
-- Name and date identification
-- Missing-field detection
-- Document classification
+Documents are becoming increasingly digital. So are the methods used to manipulate them.
 
-</td>
-<td width="50%" valign="top">
+**ScamScan 2.0** is an AI-powered Digital Trust & Document Forensics Platform being engineered to examine documents, extract information, investigate suspicious characteristics and generate explainable findings.
 
-### ◈ DIGITAL FORENSICS
+We combine document intelligence, OCR, digital image forensics and evidence-based analysis into one unified platform.
 
-- Error Level Analysis (ELA)
-- Image metadata inspection
-- Compression analysis
-- Edge and noise analysis
-- PDF structure inspection
-- Digital evidence examination
+**Our mission is simple: Make digital document examination more intelligent, transparent and accessible.**
 
 </td>
-</tr>
-<tr>
-<td width="50%" valign="top">
+<td width="35%" align="center" valign="middle">
 
-### ◈ CONSISTENCY ENGINE
+<img src="https://img.shields.io/badge/SCAMSCAN-2.0-00D9FF?style=for-the-badge&labelColor=07111F" />
 
-- Conflicting information detection
-- Amount and date comparisons
-- Duplicate reference detection
-- Missing information
-- Cross-field validation
+<br/><br/>
 
-</td>
-<td width="50%" valign="top">
+<img src="https://img.shields.io/badge/INTELLIGENCE-ENGINE-168BFF?style=for-the-badge&labelColor=07111F"/>
 
-### ◈ AI FORENSIC ASSISTANT
+<br/><br/>
 
-- Evidence-grounded explanations
-- Risk interpretation
-- Document insights
-- Verification recommendations
-- Human-readable findings
+<img src="https://img.shields.io/badge/FORENSICS-CORE-8B5CF6?style=for-the-badge&labelColor=07111F"/>
 
 </td>
 </tr>
 </table>
 
-*These modules describe the planned platform. Their implementation status is tracked below.*
+---
+
+<div align="center">
+
+## ⚡ THE INTELLIGENCE ECOSYSTEM
+
+<sub>FOUR PILLARS. ONE DIGITAL TRUST PLATFORM.</sub>
+
+</div>
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 📄 01 — DOCUMENT INTELLIGENCE
+
+Extract meaningful information from complex digital documents.
+
+- 🔍 OCR text extraction
+- 📑 Multi-page PDF processing
+- 🧠 Structured field extraction
+- 👤 Name and date recognition
+- 💰 Financial information extraction
+- ⚠️ Missing-field detection
+
+</td>
+<td width="50%" valign="top">
+
+### 🔬 02 — DIGITAL FORENSICS
+
+Investigate digital characteristics that may indicate manipulation.
+
+- 🧬 Error Level Analysis
+- 🖼️ Image metadata inspection
+- 📊 Compression analysis
+- 🔎 Edge and noise analysis
+- 📑 PDF structure inspection
+- 🧩 Embedded image examination
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🧠 03 — CONSISTENCY INTELLIGENCE
+
+Identify conflicting information across document fields.
+
+- ⚖️ Cross-field validation
+- 📅 Date inconsistency detection
+- 💳 Amount verification
+- 🔗 Duplicate reference detection
+- 🚩 Missing information
+- 📋 Evidence-based findings
+
+</td>
+<td width="50%" valign="top">
+
+### 🤖 04 — AI FORENSIC ASSISTANT
+
+Turn complex forensic findings into understandable explanations.
+
+- 💬 Natural-language explanations
+- 🧠 Context-aware assistance
+- 📊 Risk interpretation
+- 🔍 Evidence-grounded answers
+- 🛡️ Verification recommendations
+- 📑 Report assistance
+
+</td>
+</tr>
+</table>
 
 ---
 
-## `03` — PROCESSING ARCHITECTURE
+<div align="center">
+
+## 🔄 INSIDE THE SCAMSCAN ENGINE
+
+<sub>FROM RAW DOCUMENTS TO EXPLAINABLE FORENSIC FINDINGS</sub>
+
+</div>
 
 ```mermaid
 flowchart TD
-    A["DOCUMENT INPUT"] --> B["SECURE FILE VALIDATION"]
+    A["📁 DOCUMENT INPUT"] --> B["🛡️ SECURE VALIDATION"]
     B --> C{"DOCUMENT TYPE"}
-    C -->|PDF| D["PDF EXTRACTION"]
-    C -->|IMAGE| E["TESSERACT OCR"]
-    D --> F["STRUCTURED INFORMATION"]
+    C -->|PDF| D["📑 PDF PROCESSOR"]
+    C -->|IMAGE| E["🔍 OCR ENGINE"]
+    D --> F["🧠 INFORMATION EXTRACTION"]
     E --> F
-    F --> G["DOCUMENT INTELLIGENCE"]
-    G --> H["FORENSIC ANALYSIS"]
-    H --> I["CONSISTENCY ENGINE"]
-    I --> J["EXPLAINABLE FINDINGS"]
-    J --> K["ANALYSIS REPORT"]
+    F --> G["⚖️ CONSISTENCY INTELLIGENCE"]
+    G --> H["🔬 FORENSIC ANALYSIS"]
+    H --> I["📊 EVIDENCE ENGINE"]
+    I --> J["🤖 AI EXPLANATION"]
+    J --> K["📄 ANALYSIS REPORT"]
 
-    classDef primary fill:#071B31,stroke:#00D9FF,color:#E5FAFF
-    classDef process fill:#0A1630,stroke:#168BFF,color:#E5FAFF
-    class A,B,C,D,E,F,G,H,I,J,K primary
+    classDef input fill:#06172B,stroke:#00D9FF,color:#FFFFFF
+    classDef engine fill:#101A35,stroke:#168BFF,color:#FFFFFF
+    classDef output fill:#102A35,stroke:#00C9A7,color:#FFFFFF
+
+    class A,B,C input
+    class D,E,F,G,H,I engine
+    class J,K output
 ```
 
 ---
 
-## `04` — TECHNOLOGY MATRIX
-
 <div align="center">
 
-**BACKEND ENGINEERING**
+## 💎 TECHNOLOGY POWERING SCAMSCAN
+
+<sub>THE ENGINEERING ECOSYSTEM</sub>
+
+<br/><br/>
+
+### ⚙️ BACKEND ENGINEERING
 
 <img src="https://skillicons.dev/icons?i=python,fastapi" />
 
-**DOCUMENT PROCESSING**
+### 🔬 DOCUMENT PROCESSING
 
 <img src="https://img.shields.io/badge/TESSERACT-OCR-00D9FF?style=for-the-badge"/>
 <img src="https://img.shields.io/badge/PyMuPDF-PDF%20ENGINE-168BFF?style=for-the-badge"/>
-<img src="https://img.shields.io/badge/PILLOW-IMAGE%20PROCESSING-00C9A7?style=for-the-badge"/>
+<img src="https://img.shields.io/badge/PILLOW-IMAGE%20PROCESSING-8B5CF6?style=for-the-badge"/>
 
-**DEVELOPMENT ECOSYSTEM**
+### 🧰 DEVELOPMENT TOOLS
 
 <img src="https://skillicons.dev/icons?i=git,github,vscode" />
 
@@ -149,144 +202,140 @@ flowchart TD
 
 ---
 
-## `05` — IMPLEMENTATION STATUS
+## 🚀 LIVE IMPLEMENTATION STATUS
 
-| Component | Status |
-|---|---|
-| FastAPI backend | COMPLETE |
-| Health check endpoint | COMPLETE |
-| Document upload API | COMPLETE |
-| File signature validation | COMPLETE |
-| Tesseract OCR integration | IMPLEMENTED |
-| PDF text extraction | IMPLEMENTED |
-| Multi-page PDF processing | IMPLEMENTED |
-| Structured document extraction | PLANNED |
-| Document consistency engine | PLANNED |
-| Image forensic analysis | PLANNED |
-| PDF metadata analysis | PLANNED |
-| Explainable risk engine | PLANNED |
-| AI forensic assistant | PLANNED |
-| Frontend dashboard | PLANNED |
-| Authentication and history | PLANNED |
+<table>
+<tr>
+<th>ENGINEERING MODULE</th>
+<th>STATUS</th>
+</tr>
+<tr><td>⚙️ FastAPI backend foundation</td><td>✅ Implemented</td></tr>
+<tr><td>💚 API health monitoring</td><td>✅ Implemented</td></tr>
+<tr><td>📁 Document upload API</td><td>✅ Implemented</td></tr>
+<tr><td>🛡️ File signature validation</td><td>✅ Implemented</td></tr>
+<tr><td>🔍 Tesseract OCR integration</td><td>✅ Implemented</td></tr>
+<tr><td>📑 Multi-page PDF text extraction</td><td>✅ Implemented</td></tr>
+<tr><td>🧠 Structured document intelligence</td><td>🔄 Planned</td></tr>
+<tr><td>⚖️ Document consistency engine</td><td>🔄 Planned</td></tr>
+<tr><td>🔬 Image forensic engine</td><td>🔄 Planned</td></tr>
+<tr><td>📊 Evidence-based risk engine</td><td>🔄 Planned</td></tr>
+<tr><td>🤖 AI forensic assistant</td><td>🔄 Planned</td></tr>
+<tr><td>🌐 Frontend dashboard</td><td>🔄 Planned</td></tr>
+<tr><td>🔐 Authentication and user workspace</td><td>🔄 Planned</td></tr>
+</table>
 
 ---
 
-## `06` — DEVELOPER QUICK START
+<div align="center">
 
-### Clone repository
+## 🖥️ DEVELOPER COMMAND CENTER
+
+</div>
+
+### 01 — Clone the repository
 
 ```bash
 git clone https://github.com/MrAryanKode/SCAMSCAN-NEXT.git
 cd SCAMSCAN-NEXT
 ```
 
-### Create virtual environment
-
-```bash
-cd backend
-python -m venv venv
-```
-
-### Activate environment
+### 02 — Create the Python environment
 
 ```powershell
+cd backend
+python -m venv venv
 .\venv\Scripts\Activate.ps1
 ```
 
-### Install dependencies
+### 03 — Install dependencies
 
-```bash
+```powershell
 python -m pip install fastapi "uvicorn[standard]" python-multipart pytesseract pillow pymupdf
 ```
 
-### Install Tesseract OCR
+### 04 — Install Tesseract OCR
 
-Windows users can install Tesseract from:
+Windows installation:
 
 https://github.com/UB-Mannheim/tesseract/wiki
 
-Configure its executable path in the backend.
+Configure the executable path in the backend.
 
-### Start the backend
+### 05 — Launch the engine
 
-```bash
+```powershell
 uvicorn main:app --reload
 ```
 
-### API documentation
+<div align="center">
 
-| Endpoint | Purpose |
+### 🔌 API ACCESS POINTS
+
+| METHOD | ENDPOINT | FUNCTION |
+|:---:|:---|:---|
+| 🟢 GET | `/` | API information |
+| 🟢 GET | `/api/health` | Health monitoring |
+| 🔵 POST | `/api/upload` | Document upload |
+| 🔵 POST | `/api/ocr` | Text extraction |
+
+<br/>
+
+<a href="http://127.0.0.1:8000/docs">
+<img src="https://img.shields.io/badge/OPEN-SWAGGER%20API%20DOCUMENTATION-00D9FF?style=for-the-badge&logo=fastapi&logoColor=white"/>
+</a>
+
+</div>
+
+---
+
+## 🧭 ENGINEERING ROADMAP
+
+| MILESTONE | DEVELOPMENT |
 |---|---|
-| `/` | API information |
-| `/api/health` | Server health |
-| `/api/upload` | Document upload |
-| `/api/ocr` | Text extraction |
-
-Swagger UI: `http://127.0.0.1:8000/docs`
-
----
-
-## `07` — ENGINEERING PRINCIPLES
-
-**EVIDENCE FIRST** — Every forensic finding should be connected to actual document evidence.
-
-**EXPLAINABILITY** — Users should understand why a characteristic is flagged.
-
-**SECURITY** — Uploaded documents and sensitive information must be protected.
-
-**RELIABILITY** — Handle corrupted, unsupported and malformed files safely.
-
-**TRANSPARENCY** — Automated findings must communicate uncertainty and limitations.
+| 01 | [x] Backend foundation |
+| 02 | [x] Document upload |
+| 03 | [x] OCR and PDF extraction |
+| 04 | [ ] Structured document intelligence |
+| 05 | [ ] Consistency analysis |
+| 06 | [ ] Digital image forensics |
+| 07 | [ ] PDF metadata inspection |
+| 08 | [ ] Evidence-based risk assessment |
+| 09 | [ ] AI forensic assistant |
+| 10 | [ ] Premium frontend dashboard |
+| 11 | [ ] Secure user workspace |
+| 12 | [ ] Report generation |
+| 13 | [ ] Production deployment |
 
 ---
 
-## `08` — DEVELOPMENT ROADMAP
+## 🛡️ SECURITY & RESPONSIBLE INTELLIGENCE
 
-- [x] Backend foundation
-- [x] Document upload
-- [x] OCR integration
-- [x] PDF text extraction
-- [ ] Document intelligence engine
-- [ ] Structured data extraction
-- [ ] Consistency detection
-- [ ] Image forensic engine
-- [ ] PDF metadata analyzer
-- [ ] QR and barcode inspection
-- [ ] Evidence-based risk engine
-- [ ] AI forensic assistant
-- [ ] Frontend dashboard
-- [ ] Authentication and user workspace
-- [ ] Forensic PDF reports
-- [ ] Production deployment
+ScamScan provides automated document analysis and forensic indicators. It does not independently certify documents as genuine or fraudulent.
 
----
-
-## `09` — SECURITY & RESPONSIBLE ANALYSIS
-
-ScamScan is an assistance platform, not a certification authority.
-
-Automated forensic indicators cannot independently establish that a document is genuine or fraudulent. OCR may contain errors, metadata may be altered, and findings require appropriate human interpretation.
+- 🔐 Sensitive documents must be handled securely.
+- 🧾 Every finding should be connected to actual evidence.
+- ⚖️ Automated indicators are not proof of manipulation.
+- 🧠 OCR output can contain recognition errors.
+- 👨‍⚖️ High-stakes decisions require appropriate human verification.
 
 ---
 
 <div align="center">
 
-### ◈ THE SCAMSCAN INITIATIVE ◈
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:050914,50:003B59,100:00D9FF&height=140&section=footer&text=SCAMSCAN%202.0&fontSize=38&fontColor=FFFFFF&animation=fadeIn&fontAlignY=65" width="100%"/>
 
-**ENGINEERED FOR DIGITAL TRUST.**
+### 🛡️ BUILT TO INVESTIGATE. DESIGNED TO EXPLAIN.
 
-<br/>
+**Developed by Aryan Gupta**
 
 <a href="https://github.com/MrAryanKode">
-<img src="https://img.shields.io/badge/DEVELOPER-Aryan%20Gupta-071B31?style=for-the-badge&logo=github"/>
+<img src="https://img.shields.io/badge/GITHUB-MrAryanKode-07111F?style=for-the-badge&logo=github"/>
 </a>
 
 <a href="https://github.com/MrAryanKode/SCAMSCAN-NEXT">
-<img src="https://img.shields.io/badge/EXPLORE-SCAMSCAN%202.0-00D9FF?style=for-the-badge&logo=github&logoColor=black"/>
+<img src="https://img.shields.io/badge/EXPLORE-SCAMSCAN-00D9FF?style=for-the-badge&logo=github&logoColor=black"/>
 </a>
 
-<br/><br/>
-
-<sub>Building the future of document intelligence and digital forensics.</sub>
+<sub>THE FUTURE OF DOCUMENT INTELLIGENCE STARTS HERE.</sub>
 
 </div>
