@@ -1,3 +1,4 @@
+
 from datetime import datetime, timezone
 from pathlib import Path
 import io
@@ -11,6 +12,7 @@ from PIL import Image
 
 from services.document_intelligence import DocumentIntelligence
 from services.risk_assessment import RiskAssessment
+from services.pdf_forensics import PDFForensics
 
 
 # ==================================================
@@ -20,10 +22,10 @@ from services.risk_assessment import RiskAssessment
 app = FastAPI(
     title="ScamScan 2.0 API",
     description="Digital Trust & Document Forensics API",
-    version="2.1.0",
+    version="2.2.0",
 )
 
-# Tesseract OCR executable location on the development machine.
+# Tesseract OCR executable location.
 pytesseract.pytesseract.tesseract_cmd = (
     r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 )
@@ -61,7 +63,8 @@ app.add_middleware(
 # ==================================================
 
 def validate_file_signature(extension: str, content: bytes) -> bool:
-    """Check whether the file bytes match the declared format."""
+    """Check whether file bytes match the declared format."""
+
     signatures = {
         ".jpg": content.startswith(b"\xff\xd8\xff"),
         ".jpeg": content.startswith(b"\xff\xd8\xff"),
@@ -72,11 +75,13 @@ def validate_file_signature(extension: str, content: bytes) -> bool:
         ),
         ".pdf": content.startswith(b"%PDF-"),
     }
+
     return signatures.get(extension, False)
 
 
 async def read_validated_upload(file: UploadFile):
     """Read and validate an uploaded document."""
+
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
 
@@ -120,30 +125,41 @@ async def read_validated_upload(file: UploadFile):
 # ==================================================
 
 def extract_image_text(content: bytes) -> str:
-    """Extract text from a supported image using Tesseract OCR."""
+    """Extract text from images using Tesseract OCR."""
+
     with Image.open(io.BytesIO(content)) as image:
         image.load()
 
         if image.format not in ("JPEG", "PNG", "WEBP"):
             raise ValueError("Unsupported image format.")
 
-        text = pytesseract.image_to_string(image, lang="eng")
+        text = pytesseract.image_to_string(
+            image,
+            lang="eng",
+        )
 
     return text.strip()
 
 
 def extract_pdf_text(content: bytes) -> list[dict]:
-    """Extract embedded text from every page of a PDF."""
+    """Extract embedded text from every PDF page."""
+
     extracted_pages = []
 
-    with pymupdf.open(stream=content, filetype="pdf") as document:
+    with pymupdf.open(
+        stream=content,
+        filetype="pdf",
+    ) as document:
+
         if document.page_count > MAX_PDF_PAGES:
             raise ValueError(
                 f"PDF exceeds the {MAX_PDF_PAGES}-page processing limit."
             )
 
         for page_number, page in enumerate(document):
+
             page_text = page.get_text("text").strip()
+
             extracted_pages.append({
                 "page": page_number + 1,
                 "text": page_text,
@@ -153,9 +169,12 @@ def extract_pdf_text(content: bytes) -> list[dict]:
 
 
 def process_document(content: bytes, extension: str) -> dict:
-    """Select the appropriate extraction engine."""
+    """Select the appropriate text extraction engine."""
+
     if extension == ".pdf":
+
         pages = extract_pdf_text(content)
+
         combined_text = "\n".join(
             page["text"] for page in pages
         )
@@ -183,11 +202,12 @@ def process_document(content: bytes, extension: str) -> dict:
 
 @app.get("/")
 async def root():
+
     return {
         "project": "ScamScan 2.0",
         "message": "Digital Trust & Document Forensics API",
         "status": "running",
-        "version": "2.1.0",
+        "version": "2.2.0",
     }
 
 
@@ -197,10 +217,11 @@ async def root():
 
 @app.get("/api/health")
 async def health_check():
+
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "2.1.0",
+        "version": "2.2.0",
     }
 
 
@@ -210,13 +231,16 @@ async def health_check():
 
 @app.post("/api/upload")
 async def upload_document(file: UploadFile = File(...)):
+
     file_path = None
 
     try:
+
         content, extension = await read_validated_upload(file)
 
         scan_id = str(uuid.uuid4())
         safe_filename = f"{scan_id}{extension}"
+
         file_path = UPLOAD_DIR / safe_filename
         file_path.write_bytes(content)
 
@@ -230,11 +254,14 @@ async def upload_document(file: UploadFile = File(...)):
         }
 
     except HTTPException:
+
         if file_path:
             file_path.unlink(missing_ok=True)
+
         raise
 
     except Exception:
+
         if file_path:
             file_path.unlink(missing_ok=True)
 
@@ -253,8 +280,11 @@ async def upload_document(file: UploadFile = File(...)):
 
 @app.post("/api/ocr")
 async def extract_document_text(file: UploadFile = File(...)):
+
     try:
+
         content, extension = await read_validated_upload(file)
+
         result = process_document(content, extension)
 
         return {
@@ -268,12 +298,14 @@ async def extract_document_text(file: UploadFile = File(...)):
         raise
 
     except ValueError as error:
+
         raise HTTPException(
             status_code=422,
             detail=str(error),
         )
 
     except Exception:
+
         raise HTTPException(
             status_code=422,
             detail="Document text extraction failed.",
@@ -284,20 +316,24 @@ async def extract_document_text(file: UploadFile = File(...)):
 
 
 # ==================================================
-# 9. DOCUMENT INTELLIGENCE + RISK ASSESSMENT
+# 9. DOCUMENT INTELLIGENCE + FORENSICS + RISK
 # ==================================================
 
 @app.post("/api/analyze")
 async def analyze_document(file: UploadFile = File(...)):
+
     try:
-        # Step 1: Read and validate the uploaded document.
+
+        # STEP 1: Read and validate uploaded document.
         content, extension = await read_validated_upload(file)
 
-        # Step 2: Extract text from the image or PDF.
+        # STEP 2: Extract text from image or PDF.
         extraction = process_document(content, extension)
+
         extracted_text = extraction["extracted_text"]
 
         if not extracted_text.strip():
+
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -306,15 +342,32 @@ async def analyze_document(file: UploadFile = File(...)):
                 ),
             )
 
-        # Step 3: Classify the document and extract labelled information.
-        intelligence = DocumentIntelligence.analyze(extracted_text)
+        # STEP 3: Run document intelligence.
+        intelligence = DocumentIntelligence.analyze(
+            extracted_text
+        )
 
-        # Step 4: Assess the extracted intelligence for review indicators.
-        # No forensic findings are supplied yet; image/PDF forensic modules
-        # will be connected in a later development task.
+        # STEP 4: Run PDF forensics only for PDF files.
+        pdf_forensics = None
+        forensic_findings = []
+
+        if extension == ".pdf":
+
+            pdf_forensics = PDFForensics.analyze(
+                file_bytes=content,
+                filename=file.filename or "document.pdf",
+            )
+
+            forensic_findings = pdf_forensics.get(
+                "findings",
+                [],
+            )
+
+        # STEP 5: Combine intelligence and forensic findings
+        # in the existing risk assessment engine.
         risk_assessment = RiskAssessment.assess(
             intelligence_analysis=intelligence,
-            forensic_findings=[],
+            forensic_findings=forensic_findings,
             file_metadata={
                 "filename": file.filename,
                 "extension": extension,
@@ -323,19 +376,25 @@ async def analyze_document(file: UploadFile = File(...)):
             },
         )
 
-        # Step 5: Return the complete result to the frontend.
+        # STEP 6: Return complete analysis.
         return {
             "scan_id": str(uuid.uuid4()),
             "filename": file.filename,
             "file_type": extension,
             "file_size_bytes": len(content),
+
             "document_extraction": {
                 "document_type": extraction["document_type"],
                 "total_pages": extraction["total_pages"],
                 "character_count": len(extracted_text),
             },
+
             "intelligence_analysis": intelligence,
+
+            "pdf_forensics": pdf_forensics,
+
             "risk_assessment": risk_assessment,
+
             "status": "completed",
         }
 
@@ -343,15 +402,20 @@ async def analyze_document(file: UploadFile = File(...)):
         raise
 
     except ValueError as error:
+
         raise HTTPException(
             status_code=422,
             detail=str(error),
         )
 
     except Exception:
+
         raise HTTPException(
             status_code=422,
-            detail="Document intelligence and risk analysis failed.",
+            detail=(
+                "Document intelligence, forensics "
+                "and risk analysis failed."
+            ),
         )
 
     finally:
@@ -364,16 +428,20 @@ async def analyze_document(file: UploadFile = File(...)):
 
 @app.get("/api/system/info")
 async def system_info():
+
     return {
         "project": "ScamScan 2.0",
+
         "modules": {
             "document_upload": "available",
             "ocr_extraction": "available",
             "pdf_extraction": "available",
             "document_intelligence": "available",
             "risk_assessment": "available",
-            "image_pdf_forensics": "not_integrated",
+            "pdf_forensics": "available",
+            "image_forensics": "not_integrated",
         },
+
         "supported_formats": list(ALLOWED_TYPES.keys()),
         "maximum_file_size_mb": 15,
         "maximum_pdf_pages": MAX_PDF_PAGES,
