@@ -295,16 +295,16 @@ uvicorn main:app --reload
 | 01 | [x] Backend foundation |
 | 02 | [x] Document upload |
 | 03 | [x] OCR and PDF extraction |
-| 04 | [ ] Structured document intelligence |
-| 05 | [ ] Consistency analysis |
-| 06 | [ ] Digital image forensics |
-| 07 | [ ] PDF metadata inspection |
-| 08 | [ ] Evidence-based risk assessment |
-| 09 | [ ] AI forensic assistant |
-| 10 | [ ] Premium frontend dashboard |
-| 11 | [ ] Secure user workspace |
-| 12 | [ ] Report generation |
-| 13 | [ ] Production deployment |
+| 04 | [x] Structured document intelligence |
+| 05 | [x] Consistency analysis |
+| 06 | [x] Digital image forensics |
+| 07 | [x] PDF metadata inspection |
+| 08 | [x] Evidence-based risk assessment |
+| 09 | [x] AI forensic assistant |
+| 10 | [x] Premium frontend dashboard |
+| 11 | [x] Secure user workspace |
+| 12 | [x] Report generation |
+| 13 | [x] Production deployment |
 
 ---
 
