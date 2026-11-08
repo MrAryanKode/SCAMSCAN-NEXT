@@ -1,0 +1,2910 @@
+﻿========================================
+FILE: main.py
+========================================
+from datetime import datetime, timezone
+from pathlib import Path
+import io
+import uuid
+
+import pymupdf
+import pytesseract
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
+
+from services.document_intelligence import DocumentIntelligence
+from services.risk_assessment import RiskAssessment
+from services.pdf_forensics import PDFForensics
+from services.image_forensics import ImageForensics
+
+
+# ==================================================
+# 1. APPLICATION CONFIGURATION
+# ==================================================
+
+app = FastAPI(
+    title="ScamScan 2.0 API",
+    description="Digital Trust & Document Forensics API",
+    version="2.3.0",
+)
+
+# Tesseract OCR executable location on the development machine.
+pytesseract.pytesseract.tesseract_cmd = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+)
+
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+MAX_FILE_SIZE = 15 * 1024 * 1024
+MAX_PDF_PAGES = 50
+
+ALLOWED_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".pdf": "application/pdf",
+}
+
+
+# ==================================================
+# 2. CORS CONFIGURATION
+# ==================================================
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
+# ==================================================
+# 3. FILE VALIDATION
+# ==================================================
+
+def validate_file_signature(extension: str, content: bytes) -> bool:
+    """Check whether file bytes match the declared format."""
+    signatures = {
+        ".jpg": content.startswith(b"\xff\xd8\xff"),
+        ".jpeg": content.startswith(b"\xff\xd8\xff"),
+        ".png": content.startswith(b"\x89PNG\r\n\x1a\n"),
+        ".webp": (
+            content.startswith(b"RIFF")
+            and content[8:12] == b"WEBP"
+        ),
+        ".pdf": content.startswith(b"%PDF-"),
+    }
+    return signatures.get(extension, False)
+
+
+async def read_validated_upload(file: UploadFile):
+    """Read and validate an uploaded document."""
+    filename = file.filename or ""
+    extension = Path(filename).suffix.lower()
+
+    if extension not in ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file format.",
+        )
+
+    if file.content_type != ALLOWED_TYPES[extension]:
+        raise HTTPException(
+            status_code=400,
+            detail="File extension and content type do not match.",
+        )
+
+    content = await file.read(MAX_FILE_SIZE + 1)
+
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is empty.",
+        )
+
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="File exceeds the 15 MB limit.",
+        )
+
+    if not validate_file_signature(extension, content[:16]):
+        raise HTTPException(
+            status_code=400,
+            detail="File content does not match its format.",
+        )
+
+    return content, extension
+
+
+# ==================================================
+# 4. TEXT EXTRACTION SERVICES
+# ==================================================
+
+def extract_image_text(content: bytes) -> str:
+    """Extract text from a supported image using Tesseract OCR."""
+    with Image.open(io.BytesIO(content)) as image:
+        image.load()
+
+        if image.format not in ("JPEG", "PNG", "WEBP"):
+            raise ValueError("Unsupported image format.")
+
+        text = pytesseract.image_to_string(image, lang="eng")
+
+    return text.strip()
+
+
+def extract_pdf_text(content: bytes) -> list[dict]:
+    """Extract embedded text from every page of a PDF."""
+    extracted_pages = []
+
+    with pymupdf.open(stream=content, filetype="pdf") as document:
+        if document.page_count > MAX_PDF_PAGES:
+            raise ValueError(
+                f"PDF exceeds the {MAX_PDF_PAGES}-page processing limit."
+            )
+
+        for page_number, page in enumerate(document):
+            page_text = page.get_text("text").strip()
+            extracted_pages.append({
+                "page": page_number + 1,
+                "text": page_text,
+            })
+
+    return extracted_pages
+
+
+def process_document(content: bytes, extension: str) -> dict:
+    """Select the appropriate text extraction engine."""
+    if extension == ".pdf":
+        pages = extract_pdf_text(content)
+        combined_text = "\n".join(
+            page["text"] for page in pages
+        )
+
+        return {
+            "document_type": "PDF",
+            "pages": pages,
+            "total_pages": len(pages),
+            "extracted_text": combined_text,
+        }
+
+    extracted_text = extract_image_text(content)
+
+    return {
+        "document_type": "IMAGE",
+        "pages": None,
+        "total_pages": 1,
+        "extracted_text": extracted_text,
+    }
+
+
+# ==================================================
+# 5. ROOT ENDPOINT
+# ==================================================
+
+@app.get("/")
+async def root():
+    return {
+        "project": "ScamScan 2.0",
+        "message": "Digital Trust & Document Forensics API",
+        "status": "running",
+        "version": "2.3.0",
+    }
+
+
+# ==================================================
+# 6. HEALTH CHECK
+# ==================================================
+
+@app.get("/api/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": "2.3.0",
+    }
+
+
+# ==================================================
+# 7. DOCUMENT UPLOAD ENDPOINT
+# ==================================================
+
+@app.post("/api/upload")
+async def upload_document(file: UploadFile = File(...)):
+    file_path = None
+
+    try:
+        content, extension = await read_validated_upload(file)
+
+        scan_id = str(uuid.uuid4())
+        safe_filename = f"{scan_id}{extension}"
+        file_path = UPLOAD_DIR / safe_filename
+        file_path.write_bytes(content)
+
+        return {
+            "message": "Document uploaded successfully.",
+            "scan_id": scan_id,
+            "filename": file.filename,
+            "file_type": extension,
+            "file_size_bytes": len(content),
+            "status": "uploaded",
+        }
+
+    except HTTPException:
+        if file_path:
+            file_path.unlink(missing_ok=True)
+        raise
+
+    except Exception:
+        if file_path:
+            file_path.unlink(missing_ok=True)
+
+        raise HTTPException(
+            status_code=500,
+            detail="Document upload failed.",
+        )
+
+    finally:
+        await file.close()
+
+
+# ==================================================
+# 8. OCR EXTRACTION ENDPOINT
+# ==================================================
+
+@app.post("/api/ocr")
+async def extract_document_text(file: UploadFile = File(...)):
+    try:
+        content, extension = await read_validated_upload(file)
+        result = process_document(content, extension)
+
+        return {
+            "filename": file.filename,
+            **result,
+            "character_count": len(result["extracted_text"]),
+            "status": "completed",
+        }
+
+    except HTTPException:
+        raise
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=422,
+            detail="Document text extraction failed.",
+        )
+
+    finally:
+        await file.close()
+
+
+# ==================================================
+# 9. DOCUMENT INTELLIGENCE + FORENSICS + RISK
+# ==================================================
+
+@app.post("/api/analyze")
+async def analyze_document(file: UploadFile = File(...)):
+    try:
+        # Step 1: Read and validate the uploaded document.
+        content, extension = await read_validated_upload(file)
+
+        # Step 2: Extract text from the image or PDF.
+        extraction = process_document(content, extension)
+        extracted_text = extraction["extracted_text"]
+
+        # A PDF without embedded text still needs scanned-PDF OCR support.
+        # Keep the existing PDF behaviour until that feature is implemented.
+        if extension == ".pdf" and not extracted_text.strip():
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No readable text found. "
+                    "Scanned PDF OCR support is not implemented yet."
+                ),
+            )
+
+        # Images can still receive forensic analysis when OCR finds no text.
+        # In that case, text-based intelligence is explicitly unavailable.
+        intelligence = (
+            DocumentIntelligence.analyze(extracted_text)
+            if extracted_text.strip()
+            else None
+        )
+
+        # Step 4: Run the appropriate forensic engine.
+        pdf_forensics = None
+        image_forensics = None
+        forensic_findings = []
+
+        if extension == ".pdf":
+            pdf_forensics = PDFForensics.analyze(
+                file_bytes=content,
+                filename=file.filename or "document.pdf",
+            )
+            forensic_findings = pdf_forensics.get("findings", [])
+
+        elif extension in {".jpg", ".jpeg", ".png", ".webp"}:
+            image_forensics = ImageForensics.analyze(
+                file_bytes=content,
+                filename=file.filename or "image",
+            )
+            forensic_findings = image_forensics.get("findings", [])
+
+        # Step 5: Assess document intelligence and forensic findings together.
+        risk_assessment = RiskAssessment.assess(
+            intelligence_analysis=intelligence,
+            forensic_findings=forensic_findings,
+            file_metadata={
+                "filename": file.filename,
+                "extension": extension,
+                "file_size_bytes": len(content),
+                "page_count": extraction["total_pages"],
+            },
+        )
+
+        # Step 6: Return all analysis modules to the frontend.
+        return {
+            "scan_id": str(uuid.uuid4()),
+            "filename": file.filename,
+            "file_type": extension,
+            "file_size_bytes": len(content),
+            "document_extraction": {
+                "document_type": extraction["document_type"],
+                "total_pages": extraction["total_pages"],
+                "character_count": len(extracted_text),
+                "text_available": bool(extracted_text.strip()),
+            },
+            "intelligence_analysis": intelligence,
+            "pdf_forensics": pdf_forensics,
+            "image_forensics": image_forensics,
+            "risk_assessment": risk_assessment,
+            "status": "completed",
+        }
+
+    except HTTPException:
+        raise
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=422,
+            detail="Document intelligence, forensics and risk analysis failed.",
+        )
+
+    finally:
+        await file.close()
+
+
+# ==================================================
+# 10. APPLICATION INFORMATION
+# ==================================================
+
+@app.get("/api/system/info")
+async def system_info():
+    return {
+        "project": "ScamScan 2.0",
+        "modules": {
+            "document_upload": "available",
+            "ocr_extraction": "available",
+            "pdf_extraction": "available",
+            "document_intelligence": "available",
+            "risk_assessment": "available",
+            "pdf_forensics": "available",
+            "image_forensics": "available",
+        },
+        "supported_formats": list(ALLOWED_TYPES.keys()),
+        "maximum_file_size_mb": 15,
+        "maximum_pdf_pages": MAX_PDF_PAGES,
+        "status": "operational",
+    }
+
+
+
+========================================
+FILE: test_image_forensics.py
+========================================
+
+from pathlib import Path
+from services.image_forensics import ImageForensics
+
+# Change this filename to test another image.
+IMAGE_PATH = Path("test.jpg")
+
+def main():
+    if not IMAGE_PATH.is_file():
+        print(f"Image not found: {IMAGE_PATH}")
+        return
+
+    forensic = ImageForensics()
+
+    # Read the selected image.
+    image_bytes = IMAGE_PATH.read_bytes()
+
+    # Analyze using the existing forensic service.
+    result = forensic.analyze(
+        image_bytes,
+        filename=IMAGE_PATH.name
+    )
+
+    print("\n========== SCAMSCAN FORENSIC TEST ==========")
+    print("STATUS:", result.get("status"))
+
+    metadata = result.get("metadata") or {}
+    print("FORMAT:", metadata.get("format"))
+
+    # JPEG ELA analysis
+    ela = result.get("ela_analysis") or {}
+    print("JPEG ELA AVAILABLE:", ela.get("available", False))
+
+    if ela.get("available"):
+        print("ELA MEAN DIFFERENCE:", ela.get("mean_difference"))
+        print("ELA MAX DIFFERENCE:", ela.get("max_difference"))
+
+    # PNG residual analysis
+    png = result.get("png_analysis") or {}
+    print("PNG ANALYSIS AVAILABLE:", png.get("available", False))
+
+    if png.get("available"):
+        print("PNG METHOD:", png.get("method"))
+
+    print("PNG METADATA:", result.get("png_metadata"))
+    print("SUMMARY:", result.get("summary"))
+    print("============================================\n")
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+========================================
+FILE: services\document_intelligence.py
+========================================
+
+import re
+from datetime import datetime
+from typing import Any
+
+
+class DocumentIntelligence:
+    """Rule-based document intelligence for ScamScan 2.0."""
+
+    DOCUMENT_PATTERNS = {
+        "identity": [
+            r"\bpassport\b", r"\bdriving licence\b",
+            r"\bdriver'?s license\b", r"\bidentity card\b",
+            r"\bid card\b", r"\baadhaar\b",
+            r"\bdate of birth\b", r"\bplace of birth\b",
+        ],
+        "financial": [
+            r"\binvoice\b", r"\btax invoice\b", r"\bbill to\b",
+            r"\bsubtotal\b", r"\bgrand total\b", r"\breceipt\b",
+            r"\bpayment received\b", r"\bbank statement\b",
+            r"\baccount summary\b", r"\bopening balance\b",
+            r"\bclosing balance\b", r"\btransaction id\b",
+        ],
+        "academic": [
+            r"\bmarksheet\b", r"\bmark sheet\b", r"\btranscript\b",
+            r"\bdegree\b", r"\bdiploma\b", r"\buniversity\b",
+            r"\bsemester\b", r"\bgrade point\b",
+            r"\bcertificate of", r"\bregistration number\b",
+        ],
+        "legal": [
+            r"\bagreement\b", r"\bcontract\b", r"\baffidavit\b",
+            r"\bdeed\b", r"\bwhereas\b", r"\bterms and conditions\b",
+            r"\bparty of the first part\b", r"\bnotary\b",
+        ],
+        "travel": [
+            r"\bflight\b", r"\bpnr\b", r"\bairline\b",
+            r"\bdeparture\b", r"\barrival\b", r"\bboarding pass\b",
+            r"\bpassenger\b", r"\bhotel booking\b",
+            r"\bcheck-in\b", r"\bcheck-out\b", r"\bitinerary\b",
+        ],
+        "employment": [
+            r"\boffer letter\b", r"\bappointment letter\b",
+            r"\bexperience letter\b", r"\bsalary slip\b",
+            r"\bpayslip\b", r"\bpay slip\b", r"\bemployment\b",
+            r"\bdesignation\b", r"\bjoining date\b",
+        ],
+        "medical": [
+            r"\bmedical report\b", r"\bprescription\b",
+            r"\blaboratory report\b", r"\blab report\b",
+            r"\bpatient\b", r"\bdiagnosis\b", r"\btest result\b",
+            r"\bdoctor\b", r"\bhospital\b",
+        ],
+        "government": [
+            r"\bgovernment of\b", r"\bincome tax\b",
+            r"\btax return\b", r"\bpan\b", r"\bcertificate number\b",
+            r"\bapplication form\b", r"\bdepartment of\b",
+            r"\bmunicipal\b", r"\bbirth certificate\b",
+        ],
+    }
+
+    DATE_PATTERNS = [
+        r"\b\d{4}-\d{1,2}-\d{1,2}\b",
+        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
+        r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b",
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b",
+    ]
+
+    DATE_FORMATS = [
+        "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y",
+        "%m/%d/%Y", "%d-%m-%y", "%d/%m/%y",
+        "%d %b %Y", "%d %B %Y", "%b %d %Y",
+        "%B %d %Y", "%b %d, %Y", "%B %d, %Y",
+    ]
+
+    NAME_LABELS = [
+        "passenger name", "name of passenger",
+        "traveller name", "traveler name",
+        "customer name", "patient name",
+        "employee name", "student name",
+        "candidate name", "applicant name",
+        "account holder", "issued to", "name",
+    ]
+
+    REFERENCE_LABELS = [
+        "transaction reference", "booking reference",
+        "registration number", "certificate number",
+        "application number", "reference number",
+        "reference no", "ref no", "transaction id",
+        "invoice number", "invoice no",
+        "receipt number", "receipt no",
+        "booking id", "ticket number",
+        "document number", "policy number",
+        "order number", "order id",
+        "roll number", "roll no",
+        "enrollment number", "enrolment number",
+        "enrollment no", "enrolment no",
+        "student id", "student number",
+        "exam seat number", "seat number", "pnr",
+    ]
+
+    GENERIC_VALUES = {
+        "number", "no", "name", "id", "date", "amount",
+        "details", "customer", "passenger", "student",
+        "employee", "patient", "reference", "invoice",
+        "ticket", "document", "adult", "child",
+        "programme", "semester", "status",
+    }
+
+    CURRENCY_PATTERN = re.compile(
+        r"(?:â‚¹|INR|Rs\.?|USD|\$|EUR|â‚¬)\s*"
+        r"([0-9][0-9,]*(?:\.\d{1,2})?)",
+        re.IGNORECASE,
+    )
+
+    # --------------------------------------------------
+    # TEXT NORMALIZATION
+    # --------------------------------------------------
+
+    @staticmethod
+    def normalize_text(text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        text = text.replace("\x00", " ")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+
+        return text.strip()
+
+    # --------------------------------------------------
+    # DOCUMENT CLASSIFICATION
+    # --------------------------------------------------
+
+    @classmethod
+    def classify_document(cls, text: str) -> dict[str, Any]:
+        normalized = text.lower()
+        scores = {}
+
+        for document_type, patterns in cls.DOCUMENT_PATTERNS.items():
+            matched = [
+                pattern for pattern in patterns
+                if re.search(pattern, normalized)
+            ]
+
+            scores[document_type] = {
+                "score": len(matched),
+                "matched_indicators": matched,
+            }
+
+        if not scores or max(
+            item["score"] for item in scores.values()
+        ) == 0:
+            return {
+                "document_type": "unknown",
+                "classification_method": "keyword_matching",
+                "matched_indicators": [],
+                "classification_scores": scores,
+            }
+
+        best_type = max(
+            scores, key=lambda key: scores[key]["score"]
+        )
+
+        return {
+            "document_type": best_type,
+            "classification_method": "keyword_matching",
+            "matched_indicators": scores[best_type]["matched_indicators"],
+            "classification_scores": scores,
+        }
+
+    # --------------------------------------------------
+    # DATE EXTRACTION
+    # --------------------------------------------------
+
+    @classmethod
+    def extract_dates(cls, text: str) -> list[str]:
+        found = set()
+
+        for pattern in cls.DATE_PATTERNS:
+            for match in re.findall(
+                pattern, text, flags=re.IGNORECASE
+            ):
+                cleaned = re.sub(r"\s+", " ", match.strip())
+
+                for date_format in cls.DATE_FORMATS:
+                    try:
+                        parsed = datetime.strptime(
+                            cleaned, date_format
+                        )
+                        found.add(parsed.strftime("%Y-%m-%d"))
+                        break
+                    except ValueError:
+                        continue
+
+        return sorted(found)
+
+    # --------------------------------------------------
+    # NAME VALIDATION
+    # --------------------------------------------------
+
+    @classmethod
+    def is_valid_name(cls, candidate: str) -> bool:
+        candidate = candidate.strip(" \t:,-.")
+
+        if not 2 < len(candidate) < 81:
+            return False
+
+        if candidate.lower() in cls.GENERIC_VALUES:
+            return False
+
+        if re.search(r"\d", candidate):
+            return False
+
+        if re.search(
+            r"\b(date|number|amount|address|gender|roll|"
+            r"semester|programme|academic|year|credits|"
+            r"marks|course|total)\b",
+            candidate,
+            re.IGNORECASE,
+        ):
+            return False
+
+        if len(candidate.split()) > 6:
+            return False
+
+        return bool(re.fullmatch(
+            r"[A-Za-z][A-Za-z .'-]*", candidate
+        ))
+
+    # --------------------------------------------------
+    # TRAVEL PASSENGER NAME EXTRACTION
+    # --------------------------------------------------
+
+    @classmethod
+    def extract_travel_passenger_names(
+        cls, text: str
+    ) -> list[str]:
+
+        lines = [line.strip() for line in text.splitlines()]
+        names = set()
+
+        for index, line in enumerate(lines):
+            title_match = re.fullmatch(
+                r"(?:Mr|Mrs|Ms|Miss|Master)\.?\s+"
+                r"([A-Za-z][A-Za-z'-]*)",
+                line,
+                flags=re.IGNORECASE,
+            )
+
+            if not title_match or index + 1 >= len(lines):
+                continue
+
+            first_part = title_match.group(1)
+            next_line = lines[index + 1]
+
+            if next_line.lower() in {
+                "adult", "child", "infant", "passenger",
+                "delivered", "economy", "regular", "na",
+                "status",
+            }:
+                continue
+
+            if re.fullmatch(
+                r"[A-Za-z][A-Za-z .'-]{1,60}", next_line
+            ):
+                full_name = f"{first_part} {next_line}"
+
+                if cls.is_valid_name(full_name):
+                    names.add(full_name)
+
+        return sorted(names)
+
+    # --------------------------------------------------
+    # IMPROVED NAME EXTRACTION
+    # --------------------------------------------------
+
+    @classmethod
+    def extract_names(cls, text: str) -> list[str]:
+        names = set(cls.extract_travel_passenger_names(text))
+        lines = [line.strip() for line in text.splitlines()]
+
+        for index, line in enumerate(lines):
+            for label in sorted(cls.NAME_LABELS, key=len, reverse=True):
+                pattern = (
+                    rf"^\s*{re.escape(label)}\s*[:#-]?\s*(.*?)\s*$"
+                )
+
+                match = re.match(
+                    pattern, line, flags=re.IGNORECASE
+                )
+
+                if not match:
+                    continue
+
+                candidate = match.group(1).strip(" \t:,-")
+
+                if not candidate:
+                    for next_index in range(
+                        index + 1, min(index + 5, len(lines))
+                    ):
+                        possible = lines[next_index]
+
+                        if not possible:
+                            continue
+
+                        if possible.lower() in cls.GENERIC_VALUES:
+                            continue
+
+                        if cls.is_valid_name(possible):
+                            candidate = possible
+                            break
+
+                        break
+
+                if cls.is_valid_name(candidate):
+                    names.add(candidate)
+
+        # Academic marksheet layout.
+        academic_pattern = re.compile(
+            r"^\s*([A-Za-z][A-Za-z .'-]{1,60}?)"
+            r"\s+Academic\s+Year\s*:",
+            re.IGNORECASE,
+        )
+
+        # Name followed by Date of Issue.
+        issue_pattern = re.compile(
+            r"^\s*([A-Za-z][A-Za-z .'-]{1,60}?)"
+            r"\s+Date\s+of\s+Issue\s*:",
+            re.IGNORECASE,
+        )
+
+        for line in lines:
+            for pattern in (academic_pattern, issue_pattern):
+                match = pattern.search(line)
+
+                if match:
+                    candidate = match.group(1).strip()
+
+                    if cls.is_valid_name(candidate):
+                        names.add(candidate)
+
+        return sorted(names)
+
+    # --------------------------------------------------
+    # ROLL NUMBER EXTRACTION
+    # --------------------------------------------------
+
+    @classmethod
+    def extract_roll_numbers(cls, text: str) -> list[str]:
+        has_roll_label = bool(re.search(
+            r"\broll\s*(?:number|no\.?)\b",
+            text,
+            re.IGNORECASE,
+        ))
+
+        if not has_roll_label:
+            return []
+
+        academic_id_pattern = re.compile(
+            r"(?<![A-Z0-9])"
+            r"(?:\d{2,4}[A-Z]{2,4}\d{3,8}|"
+            r"[A-Z]{2,4}\d{5,12})"
+            r"(?![A-Z0-9])",
+            re.IGNORECASE,
+        )
+
+        roll_numbers = {
+            match.group(0).upper()
+            for match in academic_id_pattern.finditer(text)
+        }
+
+        return sorted(roll_numbers)
+
+    # --------------------------------------------------
+    # REFERENCE NUMBER EXTRACTION
+    # --------------------------------------------------
+
+    @classmethod
+    def extract_reference_numbers(cls, text: str) -> list[str]:
+        references = set()
+        lines = [line.strip() for line in text.splitlines()]
+
+        labels = sorted(
+            cls.REFERENCE_LABELS, key=len, reverse=True
+        )
+
+        for index, line in enumerate(lines):
+            for label in labels:
+
+                # Support spaces, dots and OCR-separated labels.
+                label_regex = re.escape(label).replace(
+                    r"\ ", r"[\s.]+"
+                )
+
+                match = re.search(
+                    rf"\b{label_regex}\b\.?\s*[:#-]?\s*"
+                    r"([A-Z0-9][A-Z0-9./_-]{2,})",
+                    line,
+                    flags=re.IGNORECASE,
+                )
+
+                value = match.group(1) if match else None
+
+                # Handle labels whose values are on the next line.
+                if value is None:
+                    label_match = re.fullmatch(
+                        rf"{label_regex}\.?\s*[:#-]?",
+                        line,
+                        flags=re.IGNORECASE,
+                    )
+
+                    if label_match:
+                        for next_index in range(
+                            index + 1, min(index + 5, len(lines))
+                        ):
+                            next_line = lines[next_index]
+
+                            if not next_line:
+                                continue
+
+                            next_match = re.fullmatch(
+                                r"([A-Z0-9][A-Z0-9./_-]{2,})",
+                                next_line,
+                                flags=re.IGNORECASE,
+                            )
+
+                            if next_match:
+                                value = next_match.group(1)
+
+                            break
+
+                if value:
+                    value = value.strip(" .,:;")
+
+                    if (
+                        value.lower() not in cls.GENERIC_VALUES
+                        and re.search(r"\d", value)
+                    ):
+                        references.add(value.upper())
+
+                    break
+
+        return sorted(references)
+
+    # --------------------------------------------------
+    # FLIGHT FARE EXTRACTION
+    # --------------------------------------------------
+
+    @classmethod
+    def extract_flight_fare_data(
+        cls, text: str
+    ) -> dict[str, float] | None:
+
+        start = re.search(
+            r"\bFare Details\b", text, flags=re.IGNORECASE
+        )
+
+        if not start:
+            return None
+
+        following_section = re.search(
+            r"As per Government guidelines",
+            text[start.end():],
+            flags=re.IGNORECASE,
+        )
+
+        if not following_section:
+            return None
+
+        fare_section = text[
+            start.end():
+            start.end() + following_section.start()
+        ]
+
+        number_pattern = re.compile(
+            r"(?<![A-Za-z0-9/.-])"
+            r"(?:\d{1,3}(?:,\d{3})+|\d+)"
+            r"(?:\.\d{1,2})?"
+            r"(?![A-Za-z0-9/.-])"
+        )
+
+        values = []
+
+        for match in number_pattern.finditer(fare_section):
+            try:
+                values.append(
+                    float(match.group(0).replace(",", ""))
+                )
+            except ValueError:
+                continue
+
+        if len(values) < 5:
+            return None
+
+        labels = [
+            "Base Fare", "Other Fees and Taxes",
+            "Convenience Fee", "Additional Payment",
+            "Total Amount Paid",
+        ]
+
+        return dict(zip(labels, values[-5:]))
+
+    # --------------------------------------------------
+    # AMOUNT EXTRACTION
+    # --------------------------------------------------
+
+    @classmethod
+    def extract_amounts(
+        cls, text: str, document_type: str = "unknown"
+    ) -> list[str]:
+
+        if document_type == "travel":
+            fare_data = cls.extract_flight_fare_data(text)
+
+            if fare_data:
+                return [
+                    f"INR {value:,.2f}"
+                    for value in fare_data.values()
+                ]
+
+        amounts = set()
+
+        for line in text.splitlines():
+            if not re.search(
+                r"\b(?:grand total|total amount|amount paid|"
+                r"net amount|subtotal|total|fare|price|amount|"
+                r"charges|salary|gross pay|net pay|balance)\b",
+                line,
+                flags=re.IGNORECASE,
+            ):
+                continue
+
+            for match in cls.CURRENCY_PATTERN.finditer(line):
+                amounts.add(match.group(0).strip())
+
+        return sorted(amounts)
+
+    # --------------------------------------------------
+    # FINANCIAL CONSISTENCY ANALYSIS
+    # --------------------------------------------------
+
+    @classmethod
+    def analyze_financial_consistency(
+        cls, text: str, document_type: str
+    ) -> dict[str, Any]:
+
+        if document_type == "travel":
+            fare_data = cls.extract_flight_fare_data(text)
+
+            if not fare_data:
+                return {
+                    "status": "insufficient_data",
+                    "message": "Could not reliably isolate all five flight fare values.",
+                    "components": {},
+                    "checks": [],
+                }
+
+            component_sum = round(
+                fare_data["Base Fare"]
+                + fare_data["Other Fees and Taxes"]
+                + fare_data["Convenience Fee"]
+                + fare_data["Additional Payment"],
+                2,
+            )
+
+            declared_total = fare_data["Total Amount Paid"]
+            difference = round(component_sum - declared_total, 2)
+            consistent = abs(difference) < 0.01
+
+            return {
+                "status": (
+                    "consistent" if consistent
+                    else "requires_verification"
+                ),
+                "components": fare_data,
+                "calculated_component_total": component_sum,
+                "declared_total": declared_total,
+                "difference": abs(difference),
+                "comparison": (
+                    "Flight fare components match the declared total."
+                    if consistent
+                    else "Flight fare component sum differs from the declared total."
+                ),
+                "checks": [{
+                    "name": "flight_fare_components_equal_total",
+                    "passed": consistent,
+                    "evidence": {
+                        "base_fare": fare_data["Base Fare"],
+                        "other_fees_and_taxes": fare_data["Other Fees and Taxes"],
+                        "convenience_fee": fare_data["Convenience Fee"],
+                        "additional_payment": fare_data["Additional Payment"],
+                        "calculated_total": component_sum,
+                        "declared_total": declared_total,
+                    },
+                }],
+                "limitation": (
+                    "Only values isolated from the fare section were compared; "
+                    "this does not establish ticket authenticity."
+                ),
+            }
+
+        if document_type != "financial":
+            return {
+                "status": "not_applicable",
+                "message": (
+                    "Financial arithmetic check is not applicable "
+                    "to this document category."
+                ),
+                "checks": [],
+            }
+
+        values = {}
+
+        for line in text.splitlines():
+            label_match = re.search(
+                r"\b(subtotal|tax|gst|grand total|total amount|total)\b",
+                line,
+                flags=re.IGNORECASE,
+            )
+
+            if not label_match:
+                continue
+
+            amounts = cls.CURRENCY_PATTERN.findall(line)
+
+            if not amounts:
+                continue
+
+            try:
+                values[label_match.group(1).lower()] = float(
+                    amounts[-1].replace(",", "")
+                )
+            except ValueError:
+                continue
+
+        subtotal = values.get("subtotal")
+        tax = values.get("tax", values.get("gst"))
+        total = values.get(
+            "grand total",
+            values.get("total amount", values.get("total")),
+        )
+
+        if subtotal is None or tax is None or total is None:
+            return {
+                "status": "insufficient_data",
+                "message": (
+                    "A labelled subtotal, tax and total were not all found. "
+                    "No arithmetic conclusion was made."
+                ),
+                "components": values,
+                "checks": [],
+            }
+
+        calculated = round(subtotal + tax, 2)
+        difference = round(calculated - total, 2)
+        consistent = abs(difference) < 0.01
+
+        return {
+            "status": (
+                "consistent" if consistent
+                else "requires_verification"
+            ),
+            "components": values,
+            "calculated_subtotal_plus_tax": calculated,
+            "declared_total": total,
+            "difference": abs(difference),
+            "comparison": (
+                "Subtotal plus tax matches the declared total."
+                if consistent
+                else "Subtotal plus tax differs from the declared total."
+            ),
+            "checks": [{
+                "name": "subtotal_plus_tax_equals_total",
+                "passed": consistent,
+                "evidence": {
+                    "subtotal": subtotal,
+                    "tax": tax,
+                    "calculated": calculated,
+                    "declared_total": total,
+                },
+            }],
+            "limitation": (
+                "Only the extracted labelled values were compared; "
+                "this does not establish document authenticity."
+            ),
+        }
+
+    # --------------------------------------------------
+    # MAIN ANALYSIS PIPELINE
+    # --------------------------------------------------
+
+    @classmethod
+    def analyze(cls, text: str) -> dict[str, Any]:
+
+        normalized_text = cls.normalize_text(text)
+
+        if not normalized_text:
+            return {
+                "document_type": "unknown",
+                "classification": {
+                    "document_type": "unknown",
+                    "classification_method": "keyword_matching",
+                    "matched_indicators": [],
+                    "classification_scores": {},
+                },
+                "extracted_information": {
+                    "names": [],
+                    "dates": [],
+                    "amounts": [],
+                    "reference_numbers": [],
+                    "roll_numbers": [],
+                },
+                "missing_extraction_fields": [
+                    "names", "dates", "amounts",
+                    "reference_numbers", "roll_numbers",
+                ],
+                "financial_analysis": {
+                    "status": "insufficient_data",
+                    "message": "No readable text was available for analysis.",
+                    "checks": [],
+                },
+                "text_statistics": {
+                    "character_count": 0,
+                    "word_count": 0,
+                },
+                "analysis_method": "rule_based_extraction",
+                "status": "completed",
+                "limitations": [
+                    "No readable text was supplied.",
+                    "No authenticity or fraud verdict can be made.",
+                ],
+            }
+
+        classification = cls.classify_document(normalized_text)
+        document_type = classification["document_type"]
+
+        names = cls.extract_names(normalized_text)
+        dates = cls.extract_dates(normalized_text)
+        amounts = cls.extract_amounts(normalized_text, document_type)
+        roll_numbers = cls.extract_roll_numbers(normalized_text)
+        references = cls.extract_reference_numbers(normalized_text)
+
+        # Preserve roll numbers in reference_numbers for
+        # compatibility with existing API consumers.
+        all_references = sorted(
+            set(references).union(roll_numbers)
+        )
+
+        extracted_information = {
+            "names": names,
+            "dates": dates,
+            "amounts": amounts,
+            "reference_numbers": all_references,
+            "roll_numbers": roll_numbers,
+        }
+
+        missing_fields = [
+            field
+            for field, values in extracted_information.items()
+            if not values
+        ]
+
+        return {
+            "document_type": document_type,
+            "classification": classification,
+            "extracted_information": extracted_information,
+            "missing_extraction_fields": missing_fields,
+            "financial_analysis": cls.analyze_financial_consistency(
+                normalized_text, document_type
+            ),
+            "text_statistics": {
+                "character_count": len(normalized_text),
+                "word_count": len(normalized_text.split()),
+            },
+            "analysis_method": "rule_based_extraction",
+            "status": "completed",
+            "limitations": [
+                "Classification is based on keyword matching and may be uncertain.",
+                "Extraction depends on OCR/PDF text quality and document layout.",
+                "Missing extracted fields do not prove that a document is invalid.",
+                "Automated indicators do not establish whether a document is genuine or fraudulent.",
+            ],
+        }
+
+
+
+========================================
+FILE: services\image_forensics.py
+========================================
+
+"""
+ScamScan 2.0 - Image Forensics Engine
+
+Capabilities:
+- Image properties and EXIF metadata extraction.
+- SHA-256 file fingerprinting.
+- JPEG Error Level Analysis (ELA).
+- PNG metadata inspection.
+- PNG local high-frequency residual visualization.
+
+Important:
+These techniques provide review indicators only.
+They do not prove manipulation, authenticity, or fraud.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import io
+from pathlib import PurePath
+from typing import Any
+
+import numpy as np
+from PIL import (
+    ExifTags,
+    Image,
+    ImageFilter,
+    UnidentifiedImageError,
+)
+
+
+class ImageForensics:
+    """Explainable metadata and image analysis engine."""
+
+    SUPPORTED_FORMATS = {"JPEG", "PNG", "WEBP"}
+
+    MAX_IMAGE_PIXELS = 40_000_000
+
+    ELA_RECOMPRESSION_QUALITY = 90
+    ELA_VISUALIZATION_SCALE = 10
+
+    MAX_VISUALIZATION_DIMENSION = 1200
+
+    # --------------------------------------------------
+    # MAIN IMAGE ANALYSIS
+    # --------------------------------------------------
+
+    @classmethod
+    def analyze(
+        cls,
+        file_bytes: bytes,
+        filename: str = "image",
+    ) -> dict[str, Any]:
+        """Analyze an image and return JSON-serializable results."""
+
+        if not file_bytes:
+            raise ValueError("Image file is empty.")
+
+        file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+        try:
+            # First verify that the uploaded image is readable.
+            with Image.open(
+                io.BytesIO(file_bytes)
+            ) as verification_image:
+
+                verification_image.verify()
+
+            # Reopen after verification.
+            with Image.open(io.BytesIO(file_bytes)) as image:
+
+                image_format = (image.format or "").upper()
+
+                if image_format not in cls.SUPPORTED_FORMATS:
+                    raise ValueError(
+                        f"Unsupported image format: "
+                        f"{image_format or 'unknown'}."
+                    )
+
+                width, height = image.size
+
+                if width <= 0 or height <= 0:
+                    raise ValueError("Invalid image dimensions.")
+
+                if width * height > cls.MAX_IMAGE_PIXELS:
+                    raise ValueError(
+                        "Image exceeds the maximum pixel limit."
+                    )
+
+                # Extract image properties.
+                properties = cls._get_image_properties(
+                    image=image,
+                    filename=filename,
+                    file_size=len(file_bytes),
+                )
+
+                # Extract EXIF information.
+                exif_analysis = cls._analyze_exif(image)
+
+                findings: list[dict[str, Any]] = []
+
+                # Report available software metadata as context.
+                if exif_analysis.get("software"):
+
+                    findings.append({
+                        "code": "IMAGE_SOFTWARE_METADATA_PRESENT",
+                        "severity": "info",
+                        "title": "Image software metadata found",
+
+                        "evidence": {
+                            "software": exif_analysis["software"]
+                        },
+
+                        "explanation": (
+                            "The image contains software metadata. "
+                            "It may identify software that created or "
+                            "processed the image, but does not establish "
+                            "that the image was manipulated."
+                        ),
+
+                        "recommendation": (
+                            "Record this metadata as context and compare "
+                            "it with the document's provenance if relevant."
+                        ),
+                    })
+
+                # PNG metadata inspection.
+                png_metadata = None
+
+                if image_format == "PNG":
+                    png_metadata = cls._analyze_png_metadata(image)
+
+                # JPEG ELA.
+                ela_analysis = cls._analyze_ela(
+                    image=image,
+                    image_format=image_format,
+                )
+
+                # PNG residual analysis.
+                png_analysis = None
+
+                if image_format == "PNG":
+                    png_analysis = cls._analyze_png(image)
+
+                limitations = [
+                    "EXIF metadata may be absent, stripped, or modified.",
+                    "JPEG ELA is applicable only to JPEG images.",
+                    "PNG residual analysis is not equivalent to JPEG ELA.",
+                    "Image content, texture, compression and processing "
+                    "can affect forensic measurements.",
+                    "Visual differences are not a manipulation probability "
+                    "or authenticity verdict.",
+                    "A human reviewer should inspect the original image "
+                    "and its context.",
+                ]
+
+                return {
+                    "status": "completed",
+
+                    "analysis_method": (
+                        "pillow_metadata_jpeg_ela_png_residual"
+                    ),
+
+                    "file": {
+                        "filename": PurePath(filename).name,
+                        "sha256": file_hash,
+                        "file_size_bytes": len(file_bytes),
+                    },
+
+                    "image_properties": properties,
+
+                    "exif_analysis": exif_analysis,
+
+                    "png_metadata": png_metadata,
+
+                    "ela_analysis": ela_analysis,
+
+                    "png_analysis": png_analysis,
+
+                    "findings": findings,
+
+                    "summary": {
+                        "finding_count": len(findings),
+                        "format": image_format,
+
+                        "dimensions": {
+                            "width": width,
+                            "height": height,
+                        },
+
+                        "png_residual_analysis_available": (
+                            png_analysis is not None
+                            and png_analysis.get("available", False)
+                        ),
+
+                        "jpeg_ela_available": (
+                            ela_analysis.get("available", False)
+                        ),
+                    },
+
+                    "limitations": limitations,
+                }
+
+        except (
+            UnidentifiedImageError,
+            OSError,
+        ) as error:
+
+            raise ValueError(
+                f"Unable to read image: {error}"
+            ) from error
+
+    # --------------------------------------------------
+    # IMAGE PROPERTIES
+    # --------------------------------------------------
+
+    @staticmethod
+    def _get_image_properties(
+        image: Image.Image,
+        filename: str,
+        file_size: int,
+    ) -> dict[str, Any]:
+
+        return {
+            "filename": PurePath(filename).name,
+
+            "format": image.format,
+
+            "width": image.width,
+
+            "height": image.height,
+
+            "aspect_ratio": round(
+                image.width / image.height, 4
+            ),
+
+            "color_mode": image.mode,
+
+            "file_size_bytes": file_size,
+
+            "has_transparency": (
+                "A" in image.getbands()
+                or "transparency" in image.info
+            ),
+        }
+
+    # --------------------------------------------------
+    # SAFE METADATA CONVERSION
+    # --------------------------------------------------
+
+    @staticmethod
+    def _safe_exif_value(
+        value: Any,
+    ) -> str | None:
+
+        if value is None:
+            return None
+
+        if isinstance(value, bytes):
+            value = value.decode(
+                "utf-8",
+                errors="replace",
+            )
+
+        return str(value)[:300]
+
+    # --------------------------------------------------
+    # EXIF ANALYSIS
+    # --------------------------------------------------
+
+    @classmethod
+    def _analyze_exif(
+        cls,
+        image: Image.Image,
+    ) -> dict[str, Any]:
+
+        selected_names = {
+            "Software",
+            "DateTime",
+            "DateTimeOriginal",
+            "DateTimeDigitized",
+            "Make",
+            "Model",
+            "Orientation",
+        }
+
+        selected: dict[str, str] = {}
+
+        try:
+            raw_exif = image.getexif()
+
+            for tag_id, value in raw_exif.items():
+
+                tag_name = ExifTags.TAGS.get(
+                    tag_id,
+                    str(tag_id),
+                )
+
+                if tag_name in selected_names:
+
+                    safe_value = cls._safe_exif_value(value)
+
+                    if safe_value is not None:
+                        selected[tag_name] = safe_value
+
+        except (
+            AttributeError,
+            OSError,
+            ValueError,
+            TypeError,
+        ):
+            selected = {}
+
+        return {
+            "metadata_present": bool(selected),
+
+            "software": selected.get("Software"),
+
+            "date_taken": (
+                selected.get("DateTimeOriginal")
+                or selected.get("DateTimeDigitized")
+                or selected.get("DateTime")
+            ),
+
+            "camera_make": selected.get("Make"),
+
+            "camera_model": selected.get("Model"),
+
+            "selected_tags": selected,
+        }
+
+    # --------------------------------------------------
+    # PNG METADATA ANALYSIS
+    # --------------------------------------------------
+
+    @classmethod
+    def _analyze_png_metadata(
+        cls,
+        image: Image.Image,
+    ) -> dict[str, Any]:
+        """
+        Inspect metadata exposed by Pillow for PNG images.
+
+        Metadata presence is contextual information,
+        not evidence of image manipulation.
+        """
+
+        info = getattr(image, "info", {}) or {}
+
+        metadata_keys = sorted(
+            str(key) for key in info.keys()
+        )
+
+        recognized_metadata = [
+            key for key in metadata_keys
+            if key.lower() in {
+                "gamma",
+                "dpi",
+                "srgb",
+                "icc_profile",
+                "transparency",
+                "background",
+                "exif",
+                "xml",
+                "software",
+                "creation_time",
+                "author",
+                "description",
+                "copyright",
+            }
+        ]
+
+        return {
+            "metadata_present": bool(metadata_keys),
+
+            "metadata_key_count": len(metadata_keys),
+
+            "metadata_keys": metadata_keys,
+
+            "recognized_metadata_fields": recognized_metadata,
+
+            "analysis_note": (
+                "PNG metadata fields exposed by Pillow were inspected. "
+                "Their presence or absence does not establish authenticity."
+            ),
+        }
+
+    # --------------------------------------------------
+    # JPEG ERROR LEVEL ANALYSIS
+    # --------------------------------------------------
+
+    @classmethod
+    def _analyze_ela(
+        cls,
+        image: Image.Image,
+        image_format: str,
+    ) -> dict[str, Any]:
+
+        if image_format != "JPEG":
+
+            return {
+                "available": False,
+
+                "reason": (
+                    "JPEG ELA is not applicable to this image format. "
+                    "PNG uses separate residual analysis."
+                    if image_format == "PNG"
+                    else "ELA currently supports JPEG images only."
+                ),
+            }
+
+        try:
+            original = image.convert("RGB")
+
+            recompressed_buffer = io.BytesIO()
+
+            original.save(
+                recompressed_buffer,
+                format="JPEG",
+                quality=cls.ELA_RECOMPRESSION_QUALITY,
+                optimize=False,
+            )
+
+            recompressed_buffer.seek(0)
+
+            with Image.open(
+                recompressed_buffer
+            ) as recompressed_image:
+
+                recompressed = recompressed_image.convert("RGB")
+
+            original_array = np.asarray(
+                original,
+                dtype=np.int16,
+            )
+
+            recompressed_array = np.asarray(
+                recompressed,
+                dtype=np.int16,
+            )
+
+            difference = np.abs(
+                original_array - recompressed_array
+            )
+
+            mean_difference = float(
+                np.mean(difference)
+            )
+
+            max_difference = int(
+                np.max(difference)
+            )
+
+            visualization = np.clip(
+                difference * cls.ELA_VISUALIZATION_SCALE,
+                0,
+                255,
+            ).astype(np.uint8)
+
+            visualization_image = Image.fromarray(
+                visualization,
+                mode="RGB",
+            )
+
+            visualization_image.thumbnail((
+                cls.MAX_VISUALIZATION_DIMENSION,
+                cls.MAX_VISUALIZATION_DIMENSION,
+            ))
+
+            output_buffer = io.BytesIO()
+
+            visualization_image.save(
+                output_buffer,
+                format="PNG",
+                optimize=True,
+            )
+
+            encoded_preview = base64.b64encode(
+                output_buffer.getvalue()
+            ).decode("ascii")
+
+            return {
+                "available": True,
+
+                "method": "jpeg_recompression_difference",
+
+                "recompression_quality": (
+                    cls.ELA_RECOMPRESSION_QUALITY
+                ),
+
+                "visualization_scale": (
+                    cls.ELA_VISUALIZATION_SCALE
+                ),
+
+                "mean_difference": round(
+                    mean_difference, 4
+                ),
+
+                "max_difference": max_difference,
+
+                "visualization": {
+                    "mime_type": "image/png",
+
+                    "encoding": "base64",
+
+                    "data": encoded_preview,
+
+                    "width": visualization_image.width,
+
+                    "height": visualization_image.height,
+                },
+
+                "analysis_note": (
+                    "The visualization amplifies pixel differences "
+                    "after JPEG recompression. Bright regions are not "
+                    "proof of editing; content, prior compression and "
+                    "processing can affect them."
+                ),
+            }
+
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+        ) as error:
+
+            return {
+                "available": False,
+
+                "reason": (
+                    f"ELA analysis could not be completed: {error}"
+                ),
+            }
+
+    # --------------------------------------------------
+    # PNG LOCAL RESIDUAL ANALYSIS
+    # --------------------------------------------------
+
+    @classmethod
+    def _analyze_png(
+        cls,
+        image: Image.Image,
+    ) -> dict[str, Any]:
+        """
+        Calculate local high-frequency pixel residuals.
+
+        This creates a visualization of local texture differences.
+        It is NOT PNG ELA and does NOT identify edited regions reliably.
+        """
+
+        try:
+            # Convert to grayscale for residual analysis.
+            original = image.convert("L")
+
+            # Limit processing size to reduce memory usage.
+            original.thumbnail((
+                cls.MAX_VISUALIZATION_DIMENSION,
+                cls.MAX_VISUALIZATION_DIMENSION,
+            ))
+
+            # Apply a small blur to estimate local image structure.
+            blurred = original.filter(
+                ImageFilter.BoxBlur(radius=1)
+            )
+
+            original_array = np.asarray(
+                original,
+                dtype=np.float32,
+            )
+
+            blurred_array = np.asarray(
+                blurred,
+                dtype=np.float32,
+            )
+
+            # Absolute high-frequency residual.
+            residual = np.abs(
+                original_array - blurred_array
+            )
+
+            mean_residual = float(
+                np.mean(residual)
+            )
+
+            p95_residual = float(
+                np.percentile(residual, 95)
+            )
+
+            p99_residual = float(
+                np.percentile(residual, 99)
+            )
+
+            max_residual = float(
+                np.max(residual)
+            )
+
+            # Normalize only for visualization.
+            # This is not a risk score or manipulation threshold.
+            scale_reference = max(
+                p99_residual,
+                1.0,
+            )
+
+            visualization = np.clip(
+                (residual / scale_reference) * 255,
+                0,
+                255,
+            ).astype(np.uint8)
+
+            visualization_image = Image.fromarray(
+                visualization,
+                mode="L",
+            )
+
+            output_buffer = io.BytesIO()
+
+            visualization_image.save(
+                output_buffer,
+                format="PNG",
+                optimize=True,
+            )
+
+            encoded_preview = base64.b64encode(
+                output_buffer.getvalue()
+            ).decode("ascii")
+
+            return {
+                "available": True,
+
+                "method": "png_local_high_frequency_residual",
+
+                "analysis_dimensions": {
+                    "width": original.width,
+                    "height": original.height,
+                },
+
+                "metrics": {
+                    "mean_residual": round(
+                        mean_residual, 4
+                    ),
+
+                    "p95_residual": round(
+                        p95_residual, 4
+                    ),
+
+                    "p99_residual": round(
+                        p99_residual, 4
+                    ),
+
+                    "max_residual": round(
+                        max_residual, 4
+                    ),
+                },
+
+                "visualization": {
+                    "mime_type": "image/png",
+
+                    "encoding": "base64",
+
+                    "data": encoded_preview,
+
+                    "width": visualization_image.width,
+
+                    "height": visualization_image.height,
+                },
+
+                "analysis_note": (
+                    "This visualization shows local high-frequency "
+                    "pixel residuals. Bright regions can correspond "
+                    "to edges, text, fine texture or noise. They are "
+                    "not evidence of manipulation by themselves."
+                ),
+
+                "limitations": [
+                    "PNG is lossless, so JPEG-style ELA is not applicable.",
+                    "Natural image edges and text produce strong residuals.",
+                    "Resizing and image content affect residual measurements.",
+                    "This method does not identify copy-paste edits or prove tampering.",
+                    "No manipulation probability is calculated.",
+                ],
+            }
+
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+        ) as error:
+
+            return {
+                "available": False,
+
+                "reason": (
+                    f"PNG residual analysis could not be completed: {error}"
+                ),
+            }
+
+
+
+========================================
+FILE: services\pdf_forensics.py
+========================================
+
+"""
+SCAMSCAN-NEXT: PDF Forensics Service
+
+Features:
+1. PDF metadata extraction
+2. Creation and modification date analysis
+3. PDF version and internal object count
+4. Page dimensions and orientation
+5. Embedded image detection
+6. Links and annotations detection
+7. Embedded attachment detection
+8. Encryption detection
+9. PDF title and filename mismatch detection
+
+Important:
+These are review indicators, not proof of fraud.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import PurePath
+from typing import Any, Dict, List, Optional
+import re
+
+# Modern PyMuPDF import (avoids deprecated fitz warning)
+import pymupdf as fitz
+
+
+class PDFForensics:
+    """Metadata and structural analysis for PDF documents."""
+
+    METADATA_FIELDS = (
+        "title",
+        "author",
+        "subject",
+        "keywords",
+        "creator",
+        "producer",
+        "creationDate",
+        "modDate",
+        "format",
+        "encryption",
+    )
+
+    @staticmethod
+    def _clean_text(value: Any) -> Optional[str]:
+        """Remove unnecessary spaces and handle empty metadata."""
+        if value is None:
+            return None
+
+        cleaned = str(value).strip()
+        return cleaned or None
+
+    @staticmethod
+    def _parse_pdf_date(value: Optional[str]) -> Optional[str]:
+        """Convert common PDF dates into readable format."""
+        if not value:
+            return None
+
+        match = re.search(
+            r"D:(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?",
+            value.strip(),
+        )
+
+        if not match:
+            return value.strip()
+
+        year, month, day, hour, minute, second = [
+            part or "00" for part in match.groups()
+        ]
+
+        try:
+            parsed = datetime(
+                int(year),
+                int(month),
+                int(day or "01"),
+                int(hour),
+                int(minute),
+                int(second),
+            )
+            return parsed.isoformat()
+
+        except ValueError:
+            return value.strip()
+
+    @staticmethod
+    def _page_dimensions(page: fitz.Page) -> Dict[str, Any]:
+        """Extract page dimensions and orientation."""
+        rect = page.rect
+
+        width = round(float(rect.width), 2)
+        height = round(float(rect.height), 2)
+
+        if abs(width - height) < 1:
+            orientation = "square"
+        elif width > height:
+            orientation = "landscape"
+        else:
+            orientation = "portrait"
+
+        return {
+            "width_points": width,
+            "height_points": height,
+            "orientation": orientation,
+            "rotation": int(page.rotation),
+        }
+
+    @staticmethod
+    def _count_annotations(page: fitz.Page) -> int:
+        """Count PDF annotations safely."""
+        try:
+            count = 0
+            annotation = page.first_annot
+
+            while annotation is not None:
+                count += 1
+                annotation = annotation.next
+
+            return count
+
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _collect_embedded_files(
+        document: fitz.Document,
+    ) -> List[Dict[str, Any]]:
+        """Extract details of files attached inside the PDF."""
+        attachments = []
+
+        try:
+            for name in document.embfile_names():
+
+                try:
+                    info = document.embfile_info(name)
+
+                    attachments.append({
+                        "name": str(name),
+                        "size_bytes": int(
+                            info.get("size", 0) or 0
+                        ),
+                        "description": PDFForensics._clean_text(
+                            info.get("desc")
+                        ),
+                    })
+
+                except Exception:
+                    attachments.append({
+                        "name": str(name),
+                        "size_bytes": None,
+                    })
+
+        except Exception:
+            pass
+
+        return attachments
+
+    @classmethod
+    def _collect_metadata(
+        cls,
+        document: fitz.Document,
+    ) -> Dict[str, Any]:
+        """Extract standard PDF metadata."""
+        raw = document.metadata or {}
+        metadata = {}
+
+        for field in cls.METADATA_FIELDS:
+
+            value = cls._clean_text(raw.get(field))
+
+            if field in ("creationDate", "modDate"):
+                metadata[field] = cls._parse_pdf_date(value)
+            else:
+                metadata[field] = value
+
+        return metadata
+
+    @staticmethod
+    def _normalized_filename(
+        value: Optional[str],
+    ) -> Optional[str]:
+        """Normalize filenames for comparison."""
+        if not value:
+            return None
+
+        return PurePath(value.strip()).stem.casefold()
+
+    @classmethod
+    def _build_findings(
+        cls,
+        metadata: Dict[str, Any],
+        filename: str,
+        page_count: int,
+        embedded_files: List[Dict[str, Any]],
+        is_encrypted: bool,
+    ) -> List[Dict[str, Any]]:
+        """Generate explainable PDF review indicators."""
+
+        findings = []
+
+        # Check missing creation date.
+        if not metadata.get("creationDate"):
+
+            findings.append({
+                "code": "PDF_CREATION_DATE_MISSING",
+                "severity": "info",
+                "title": "PDF creation date is unavailable",
+                "evidence": {
+                    "creation_date": None
+                },
+                "explanation": (
+                    "The PDF does not expose a readable creation date."
+                ),
+            })
+
+        # Check missing PDF producer.
+        if not metadata.get("producer"):
+
+            findings.append({
+                "code": "PDF_PRODUCER_MISSING",
+                "severity": "info",
+                "title": "PDF producer is unavailable",
+                "evidence": {
+                    "producer": None
+                },
+                "explanation": (
+                    "The software generating this PDF is not identified."
+                ),
+            })
+
+        # Compare creation and modification dates.
+        creation = metadata.get("creationDate")
+        modification = metadata.get("modDate")
+
+        if creation and modification and creation != modification:
+
+            findings.append({
+                "code": "PDF_MODIFICATION_DATE_DIFFERS",
+                "severity": "info",
+                "title": "Creation and modification dates differ",
+                "evidence": {
+                    "creation_date": creation,
+                    "modification_date": modification,
+                },
+                "explanation": (
+                    "The PDF modification date differs from its "
+                    "creation date. Normal editing can cause this."
+                ),
+            })
+
+        # Compare embedded title with uploaded filename.
+        title = metadata.get("title")
+
+        title_stem = cls._normalized_filename(title)
+        filename_stem = cls._normalized_filename(filename)
+
+        if (
+            title_stem
+            and filename_stem
+            and title_stem != filename_stem
+        ):
+
+            findings.append({
+                "code": "PDF_TITLE_FILENAME_MISMATCH",
+                "severity": "info",
+                "title": "PDF title differs from uploaded filename",
+                "evidence": {
+                    "pdf_title": title,
+                    "uploaded_filename": filename,
+                },
+                "explanation": (
+                    "The embedded PDF title differs from the "
+                    "uploaded filename. This may happen when a "
+                    "document is renamed or reused."
+                ),
+            })
+
+        # Check embedded attachments.
+        if embedded_files:
+
+            findings.append({
+                "code": "PDF_EMBEDDED_FILES_PRESENT",
+                "severity": "review",
+                "title": "PDF contains embedded attachments",
+                "evidence": {
+                    "attachments": embedded_files
+                },
+                "explanation": (
+                    "Review attached files if they are unexpected."
+                ),
+            })
+
+        # Check encryption.
+        if is_encrypted:
+
+            findings.append({
+                "code": "PDF_ENCRYPTED",
+                "severity": "info",
+                "title": "PDF encryption is enabled",
+                "evidence": {
+                    "is_encrypted": True
+                },
+                "explanation": (
+                    "PDF encryption is common and is not "
+                    "itself suspicious."
+                ),
+            })
+
+        # Check empty PDF.
+        if page_count == 0:
+
+            findings.append({
+                "code": "PDF_HAS_NO_PAGES",
+                "severity": "review",
+                "title": "PDF contains no readable pages",
+                "evidence": {
+                    "page_count": 0
+                },
+                "explanation": (
+                    "No pages could be enumerated in this PDF."
+                ),
+            })
+
+        return findings
+
+    @classmethod
+    def analyze(
+        cls,
+        file_bytes: bytes,
+        filename: str = "document.pdf",
+        password: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Analyze PDF bytes and return JSON-serializable results."""
+
+        # Validate input.
+        if not isinstance(file_bytes, (bytes, bytearray)):
+            raise TypeError(
+                "file_bytes must be bytes or bytearray"
+            )
+
+        if not file_bytes:
+            raise ValueError("The uploaded PDF is empty")
+
+        if not bytes(file_bytes).startswith(b"%PDF-"):
+            raise ValueError(
+                "The uploaded file does not have a valid PDF header"
+            )
+
+        document = None
+
+        try:
+            # Open PDF directly from memory.
+            document = fitz.open(
+                stream=bytes(file_bytes),
+                filetype="pdf",
+            )
+
+            is_encrypted = bool(document.is_encrypted)
+
+            # Handle password-protected PDFs.
+            if is_encrypted:
+
+                if not password:
+
+                    return {
+                        "status": "password_required",
+                        "filename": filename,
+                        "metadata": {},
+                        "structure": {
+                            "is_encrypted": True,
+                            "requires_password": True,
+                            "page_count": None,
+                        },
+                        "findings": [{
+                            "code": "PDF_PASSWORD_REQUIRED",
+                            "severity": "info",
+                            "title": "Password required for PDF analysis",
+                            "evidence": {},
+                            "explanation": (
+                                "Provide the PDF password before "
+                                "page-level analysis."
+                            ),
+                        }],
+                        "limitations": [
+                            "Page-level structure was not inspected "
+                            "because the PDF is password-protected."
+                        ],
+                    }
+
+                if not document.authenticate(password):
+                    raise ValueError(
+                        "The supplied PDF password is incorrect"
+                    )
+
+            # Extract metadata.
+            metadata = cls._collect_metadata(document)
+
+            pages = []
+
+            total_images = 0
+            total_links = 0
+            total_annotations = 0
+
+            # Analyze each page.
+            for page_index in range(document.page_count):
+
+                page = document.load_page(page_index)
+
+                try:
+                    image_count = len(
+                        page.get_images(full=True)
+                    )
+                except Exception:
+                    image_count = 0
+
+                try:
+                    link_count = len(page.get_links())
+                except Exception:
+                    link_count = 0
+
+                annotation_count = cls._count_annotations(page)
+
+                total_images += image_count
+                total_links += link_count
+                total_annotations += annotation_count
+
+                pages.append({
+                    "page_number": page_index + 1,
+                    **cls._page_dimensions(page),
+                    "image_count": image_count,
+                    "link_count": link_count,
+                    "annotation_count": annotation_count,
+                    "text_character_count": len(
+                        page.get_text("text") or ""
+                    ),
+                })
+
+            # Extract embedded attachments.
+            embedded_files = cls._collect_embedded_files(
+                document
+            )
+
+            # Count internal PDF objects.
+            try:
+                xref_count = int(document.xref_length())
+            except Exception:
+                xref_count = None
+
+            # Get PDF version from metadata first.
+            pdf_version = metadata.get("format")
+
+            if not pdf_version:
+                pdf_version = cls._clean_text(
+                    getattr(document, "pdf_version", None)
+                )
+
+            structure = {
+                "page_count": int(document.page_count),
+                "is_encrypted": is_encrypted,
+                "requires_password": False,
+                "is_repaired": bool(
+                    getattr(document, "is_repaired", False)
+                ),
+                "pdf_version": pdf_version,
+                "xref_object_count": xref_count,
+                "total_image_references": total_images,
+                "total_links": total_links,
+                "total_annotations": total_annotations,
+                "embedded_files": embedded_files,
+                "pages": pages,
+            }
+
+            # Generate review indicators.
+            findings = cls._build_findings(
+                metadata=metadata,
+                filename=filename,
+                page_count=document.page_count,
+                embedded_files=embedded_files,
+                is_encrypted=is_encrypted,
+            )
+
+            # Return complete analysis.
+            return {
+                "status": "completed",
+                "filename": filename,
+                "metadata": metadata,
+                "structure": structure,
+                "findings": findings,
+                "summary": {
+                    "finding_count": len(findings),
+                    "page_count": int(document.page_count),
+                    "embedded_file_count": len(embedded_files),
+                    "image_reference_count": total_images,
+                },
+                "analysis_method": (
+                    "pymupdf_metadata_and_structure"
+                ),
+                "limitations": [
+                    "Metadata can be missing, edited, or rewritten "
+                    "by legitimate PDF software.",
+                    "Different creation and modification dates do "
+                    "not prove tampering.",
+                    "A PDF title/filename mismatch can result from "
+                    "ordinary renaming.",
+                    "Image and link counts describe structure; "
+                    "they are not fraud indicators by themselves.",
+                    "This module does not verify digital signatures "
+                    "or establish authenticity.",
+                    "Visual image manipulation requires separate "
+                    "image-forensics analysis.",
+                ],
+            }
+
+        except (fitz.FileDataError, fitz.EmptyFileError) as exc:
+
+            raise ValueError(
+                f"Unable to read PDF: {exc}"
+            ) from exc
+
+        finally:
+
+            if document is not None:
+                document.close()
+
+
+
+========================================
+FILE: services\risk_assessment.py
+========================================
+
+from typing import Any
+
+
+class RiskAssessment:
+    """
+    Explainable, rule-based risk indicator engine for ScamScan 2.0.
+
+    The score represents review priority based on available indicators.
+    It is not a probability of fraud and is not an authenticity verdict.
+    """
+
+    EXPECTED_FIELDS = {
+        "identity": ["names", "dates", "reference_numbers"],
+        "financial": ["dates", "amounts", "reference_numbers"],
+        "academic": ["names", "dates", "reference_numbers"],
+        "legal": ["names", "dates", "reference_numbers"],
+        "travel": ["names", "dates", "reference_numbers"],
+        "employment": ["names", "dates"],
+        "medical": ["names", "dates"],
+        "government": ["names", "dates", "reference_numbers"],
+        "unknown": [],
+    }
+
+    MAX_SCORE = 100
+
+    @staticmethod
+    def _finding(
+        code: str,
+        title: str,
+        severity: str,
+        points: int,
+        evidence: Any,
+        explanation: str,
+        recommendation: str,
+    ) -> dict[str, Any]:
+        return {
+            "code": code,
+            "title": title,
+            "severity": severity,
+            "points": points,
+            "evidence": evidence,
+            "explanation": explanation,
+            "recommendation": recommendation,
+        }
+
+    @staticmethod
+    def _first_available(
+        mapping: dict[str, Any],
+        keys: tuple[str, ...],
+    ) -> Any:
+        """Return the first non-None value from compatible engine field names."""
+        for key in keys:
+            value = mapping.get(key)
+            if value is not None:
+                return value
+        return None
+
+    @classmethod
+    def _financial_evidence(
+        cls,
+        financial: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Normalize financial results from different engine versions."""
+
+        calculated_total = cls._first_available(
+            financial,
+            (
+                "calculated_component_total",
+                "calculated_subtotal_plus_tax",
+                "calculated_total",
+            ),
+        )
+
+        declared_total = cls._first_available(
+            financial,
+            ("declared_total", "total_amount_paid"),
+        )
+
+        difference = financial.get("difference")
+
+        if difference is None:
+            if isinstance(calculated_total, (int, float)) and isinstance(
+                declared_total, (int, float)
+            ):
+                difference = round(
+                    abs(calculated_total - declared_total),
+                    2,
+                )
+
+        return {
+            "components": financial.get("components", {}),
+            "calculated_total": calculated_total,
+            "declared_total": declared_total,
+            "difference": difference,
+            "source_financial_status": financial.get("status"),
+        }
+
+    @classmethod
+    def assess(
+        cls,
+        intelligence_analysis: dict[str, Any] | None,
+        forensic_findings: list[dict[str, Any]] | None = None,
+        file_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Assess supplied analysis results and return a transparent score.
+
+        Missing text intelligence is not automatically treated as fraud
+        or incomplete analysis.
+        """
+
+        analysis = intelligence_analysis or {}
+
+        extracted = analysis.get("extracted_information") or {}
+        document_type = analysis.get("document_type", "unknown")
+        financial = analysis.get("financial_analysis") or {}
+        statistics = analysis.get("text_statistics") or {}
+
+        findings: list[dict[str, Any]] = []
+        limitations: list[str] = []
+
+        if not isinstance(extracted, dict):
+            extracted = {}
+
+        if not isinstance(financial, dict):
+            financial = {}
+
+        if not isinstance(statistics, dict):
+            statistics = {}
+
+        # Check whether text-based intelligence was actually performed.
+        text_analysis_available = intelligence_analysis is not None
+
+        # Do not penalize documents simply because OCR found no text.
+        expected_fields = (
+            cls.EXPECTED_FIELDS.get(document_type, [])
+            if text_analysis_available
+            else []
+        )
+
+        missing_fields = [
+            field
+            for field in expected_fields
+            if not extracted.get(field)
+        ]
+
+        if missing_fields:
+            findings.append(
+                cls._finding(
+                    code="EXPECTED_FIELDS_NOT_EXTRACTED",
+                    title="Some expected fields were not extracted",
+                    severity="low",
+                    points=min(15, len(missing_fields) * 5),
+                    evidence={
+                        "document_type": document_type,
+                        "missing_fields": missing_fields,
+                    },
+                    explanation=(
+                        "The text extraction stage did not find some commonly "
+                        "expected fields for this document category. They may "
+                        "be absent, placed in an unusual layout, or missed by OCR."
+                    ),
+                    recommendation=(
+                        "Review the original document and OCR output. Do not "
+                        "treat missing extracted fields alone as proof of tampering."
+                    ),
+                )
+            )
+
+        # Only classify unknown document types when text analysis exists.
+        if text_analysis_available and document_type == "unknown":
+            findings.append(
+                cls._finding(
+                    code="DOCUMENT_TYPE_UNCERTAIN",
+                    title="Document category could not be identified",
+                    severity="low",
+                    points=10,
+                    evidence={
+                        "document_type": document_type,
+                    },
+                    explanation=(
+                        "The available text did not match the supported "
+                        "document classification patterns."
+                    ),
+                    recommendation=(
+                        "Confirm the document type and review the extracted "
+                        "text manually."
+                    ),
+                )
+            )
+
+        # Missing text intelligence is not an incomplete analysis error.
+        if (
+            text_analysis_available
+            and str(analysis.get("status", "")).lower() != "completed"
+        ):
+            findings.append(
+                cls._finding(
+                    code="ANALYSIS_INCOMPLETE",
+                    title="Document analysis is incomplete",
+                    severity="medium",
+                    points=20,
+                    evidence={
+                        "analysis_status": analysis.get("status", "missing"),
+                    },
+                    explanation=(
+                        "The intelligence analysis did not report a completed status."
+                    ),
+                    recommendation=(
+                        "Retry analysis and verify that the file was processed successfully."
+                    ),
+                )
+            )
+
+        word_count = statistics.get("word_count")
+
+        if (
+            text_analysis_available
+            and isinstance(word_count, (int, float))
+            and word_count < 10
+        ):
+            findings.append(
+                cls._finding(
+                    code="LOW_TEXT_CONTENT",
+                    title="Very little readable text was extracted",
+                    severity="medium",
+                    points=15,
+                    evidence={
+                        "word_count": word_count,
+                    },
+                    explanation=(
+                        "A low word count may indicate a scan, image-only page, "
+                        "poor OCR, or a document with little text."
+                    ),
+                    recommendation=(
+                        "Inspect the original pages and consider a clearer "
+                        "scan or OCR review."
+                    ),
+                )
+            )
+
+        # Financial consistency checks.
+        if financial.get("status") == "requires_verification":
+            evidence = cls._financial_evidence(financial)
+
+            findings.append(
+                cls._finding(
+                    code="FINANCIAL_TOTAL_MISMATCH",
+                    title="Financial values do not reconcile",
+                    severity="high",
+                    points=35,
+                    evidence=evidence,
+                    explanation=financial.get(
+                        "comparison",
+                        "The extracted financial components differ from "
+                        "the declared total.",
+                    ),
+                    recommendation=(
+                        "Recheck the original figures, tax lines, discounts "
+                        "and OCR text before drawing a conclusion."
+                    ),
+                )
+            )
+
+        elif financial.get("status") == "insufficient_data":
+            findings.append(
+                cls._finding(
+                    code="FINANCIAL_CHECK_INSUFFICIENT_DATA",
+                    title="Financial consistency could not be checked",
+                    severity="info",
+                    points=0,
+                    evidence={
+                        "message": financial.get(
+                            "message",
+                            "Required values were not available.",
+                        )
+                    },
+                    explanation=(
+                        "The required labelled financial values were not "
+                        "all extracted."
+                    ),
+                    recommendation=(
+                        "Review the source document manually; no arithmetic "
+                        "conclusion is available."
+                    ),
+                )
+            )
+
+        # Process findings supplied by PDF or image forensic engines.
+        supplied_forensics = forensic_findings or []
+
+        severity_points = {
+            "info": 0,
+            "low": 5,
+            "medium": 15,
+            "high": 30,
+        }
+
+        for item in supplied_forensics:
+            if not isinstance(item, dict):
+                continue
+
+            severity = str(
+                item.get("severity", "info")
+            ).lower()
+
+            if severity not in severity_points:
+                severity = "info"
+
+            findings.append(
+                cls._finding(
+                    code=str(
+                        item.get("code", "FORENSIC_INDICATOR")
+                    ),
+                    title=str(
+                        item.get(
+                            "title",
+                            "Forensic indicator reported",
+                        )
+                    ),
+                    severity=severity,
+                    points=severity_points[severity],
+                    evidence=item.get("evidence"),
+                    explanation=str(
+                        item.get(
+                            "explanation",
+                            "A forensic module reported an indicator for review.",
+                        )
+                    ),
+                    recommendation=str(
+                        item.get(
+                            "recommendation",
+                            "Review the original file and supporting evidence.",
+                        )
+                    ),
+                )
+            )
+
+        # Calculate the review-priority score.
+        raw_score = sum(
+            item["points"] for item in findings
+        )
+
+        score = min(cls.MAX_SCORE, raw_score)
+
+        if score >= 60:
+            level = "high"
+        elif score >= 30:
+            level = "medium"
+        elif score > 0:
+            level = "low"
+        else:
+            level = "no_flagged_indicators"
+
+        # Clearly disclose unavailable text analysis.
+        if not text_analysis_available:
+            limitations.append(
+                "Text-based document intelligence was not run because "
+                "no readable text was extracted. The risk score does "
+                "not assess document content."
+            )
+
+        if not supplied_forensics:
+            limitations.append(
+                "No actionable image/PDF forensic findings were reported "
+                "by the available forensic modules."
+            )
+
+        limitations.extend(
+            [
+                "The score is a rule-based review-priority indicator, "
+                "not a fraud probability.",
+                "A high score does not prove manipulation; a low score "
+                "does not prove authenticity.",
+                "OCR errors, document layout and legitimate variations "
+                "can produce false alerts.",
+                "Verify important documents with the issuing organization "
+                "or an authorized professional.",
+            ]
+        )
+
+        return {
+            "risk_score": score,
+            "risk_level": level,
+            "assessment_status": "completed",
+            "document_type": document_type,
+            "finding_count": len(findings),
+            "findings": findings,
+            "score_explanation": (
+                "The score is the capped sum of points assigned to the "
+                "listed review indicators. Each finding includes its "
+                "evidence and reason."
+            ),
+            "limitations": limitations,
+            "verdict": (
+                "No authenticity or fraud verdict is made by this engine."
+            ),
+        }
+
+
+

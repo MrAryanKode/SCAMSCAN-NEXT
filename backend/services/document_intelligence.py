@@ -61,6 +61,8 @@ class DocumentIntelligence:
     DATE_PATTERNS = [
         r"\b\d{4}-\d{1,2}-\d{1,2}\b",
         r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
+        # Indian tax and government documents commonly use 06-Jul-2026.
+        r"\b\d{1,2}[-\s](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-\s]\d{4}\b",
         r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b",
         r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b",
     ]
@@ -68,7 +70,7 @@ class DocumentIntelligence:
     DATE_FORMATS = [
         "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y",
         "%m/%d/%Y", "%d-%m-%y", "%d/%m/%y",
-        "%d %b %Y", "%d %B %Y", "%b %d %Y",
+        "%d-%b-%Y", "%d-%B-%Y", "%d %b %Y", "%d %B %Y", "%b %d %Y",
         "%B %d %Y", "%b %d, %Y", "%B %d, %Y",
     ]
 
@@ -78,11 +80,14 @@ class DocumentIntelligence:
         "customer name", "patient name",
         "employee name", "student name",
         "candidate name", "applicant name",
-        "account holder", "issued to",
-        "client", "provider", "customer", "beneficiary", "recipient", "name",
+        "account holder", "issued to", "verified by", "verified and signed by",
+        "signed by", "deponent", "applicant", "client", "provider",
+        "customer", "beneficiary", "recipient", "name",
     ]
 
     REFERENCE_LABELS = [
+        "acknowledgement number", "acknowledgment number",
+        "e-filing acknowledgement number", "e-filing acknowledgment number",
         "transaction reference", "booking reference", "reference",
         "registration number", "certificate number",
         "application number", "reference number",
@@ -364,6 +369,20 @@ class DocumentIntelligence:
                 if cls.is_valid_name(candidate):
                     names.add(candidate)
 
+        # Government forms often identify a second person in a verifier/signatory
+        # line rather than in another plain "Name" field.
+        verifier_pattern = re.compile(
+            r"\b(?:and\s+)?(?:verified|signed|attested)\s+by\s+"
+            r"([A-Za-z][A-Za-z .'-]{2,60}?)"
+            r"(?=\s+(?:having\s+PAN|on\s+|using\s+|through\s+|"
+            r"generated\s+through)\b|[,;]|$)",
+            re.IGNORECASE,
+        )
+        for match in verifier_pattern.finditer(text):
+            candidate = match.group(1).strip(" \\t:,-.")
+            if cls.is_valid_name(candidate):
+                names.add(candidate)
+
         # Academic marksheet layout.
         academic_pattern = re.compile(
             r"^\s*([A-Za-z][A-Za-z .'-]{1,60}?)"
@@ -387,6 +406,38 @@ class DocumentIntelligence:
 
                     if cls.is_valid_name(candidate):
                         names.add(candidate)
+
+        # Income-tax acknowledgements may identify a separate verifier.
+        # Preserve that person's name as an extracted name as well.
+        for index, line in enumerate(lines):
+            verifier_match = re.search(
+                r"veri(?:f|ﬁ)ed\s+by\s*[:,-]?\s*(.*)$",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if not verifier_match:
+                continue
+
+            candidate = verifier_match.group(1).strip(" \t:,-.")
+            if not candidate:
+                for next_line in lines[index + 1:index + 4]:
+                    possible = next_line.strip(" \t:,-.")
+                    if not possible:
+                        continue
+                    # OCR can split a date across lines; don't mistake it for a name.
+                    if re.search(r"\d", possible):
+                        continue
+                    candidate = possible
+                    break
+
+            candidate = re.split(
+                r"\s+(?:having\s+PAN|on|using)\\b",
+                candidate,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0].strip(" \t:,-.")
+            if cls.is_valid_name(candidate):
+                names.add(candidate)
 
         return sorted(names)
 
@@ -553,37 +604,140 @@ class DocumentIntelligence:
     # AMOUNT EXTRACTION
     # --------------------------------------------------
 
+    # ITR acknowledgement labels are matched as complete labels. The row
+    # number and value are read from following lines, never treated as money.
+    ITR_FINANCIAL_LABELS = [
+        ("current_year_business_loss", "Current Year business loss, if any", "additional"),
+        ("total_income", "Total Income", "primary"),
+        ("book_profit_mat", "Book Profit under MAT, where applicable", "additional"),
+        ("adjusted_total_income_amt", "Adjusted Total Income under AMT, where applicable", "additional"),
+        ("net_tax_payable", "Net tax payable", "primary"),
+        ("interest_and_fee_payable", "Interest and Fee Payable", "primary"),
+        ("total_tax_interest_fee_payable", "Total tax, interest and Fee payable", "primary"),
+        ("taxes_paid", "Taxes Paid", "primary"),
+        ("tax_payable_refundable", "(+) Tax Payable /(-) Refundable", "primary"),
+        ("accreted_income_115td", "Accreted Income as per section 115TD", "additional"),
+        ("additional_tax_115td", "Additional Tax payable u/s 115TD", "additional"),
+        ("interest_115te", "Interest payable u/s 115TE", "additional"),
+        ("additional_tax_interest_payable", "Additional Tax and interest payable", "additional"),
+        ("tax_and_interest_paid", "Tax and interest paid", "additional"),
+        ("tax_payable_refundable_115td", "(+) Tax Payable /(-) Refundable", "additional"),
+    ]
+
+    @classmethod
+    def extract_itr_financial_rows(cls, text: str) -> list[dict[str, Any]]:
+        """Extract labelled ITR figures with row IDs and section provenance.
+
+        Values are preserved as printed. This method does not reconcile or
+        silently correct arithmetic inconsistencies in the source document.
+        """
+        lines = [line.strip() for line in text.splitlines()]
+        rows: list[dict[str, Any]] = []
+        seen_occurrences: dict[str, int] = {}
+        table_section = "Income and tax details"
+
+        # A value must be a complete numeric line. This prevents unrelated
+        # numbers in surrounding prose from being picked up.
+        value_re = re.compile(r"^\s*(?:\(\s*([+-])\s*\)|([+-]))?\s*"
+                              r"(\d[\d,]*(?:\.\d{1,2})?)\s*$")
+        row_id_re = re.compile(r"^(?:\d{1,2}[A-Z]?|[A-Z]\d{1,2})$", re.I)
+
+        def parse_value(raw: str, sign: str | None) -> float | None:
+            value = cls.parse_currency_number(raw)
+            if value is None:
+                return None
+            return -value if sign == "-" else value
+
+        for index, line in enumerate(lines):
+            if re.fullmatch(r"Accreted Income and Tax Detail", line, re.I):
+                table_section = "Accreted income and tax detail"
+                continue
+
+            for key, label, group in cls.ITR_FINANCIAL_LABELS:
+                # Exact label match, optionally followed by a value on same line.
+                if not re.match(rf"^{re.escape(label)}(?:\s|$)", line, re.I):
+                    continue
+
+                remainder = line[len(label):].strip(" :\t")
+                row_number = None
+                value = None
+
+                same_line = value_re.fullmatch(remainder) if remainder else None
+                if same_line:
+                    value = parse_value(same_line.group(3), same_line.group(1) or same_line.group(2))
+                else:
+                    # Look only a short distance ahead. Skip one explicit row ID.
+                    look = [v for v in lines[index + 1:index + 4] if v]
+                    if look and row_id_re.fullmatch(look[0]):
+                        row_number = look[0]
+                        look = look[1:]
+                    if look:
+                        candidate = value_re.fullmatch(look[0])
+                        if candidate:
+                            value = parse_value(candidate.group(3), candidate.group(1) or candidate.group(2))
+
+                if value is None:
+                    continue
+
+                seen_occurrences[key] = seen_occurrences.get(key, 0) + 1
+                occurrence = seen_occurrences[key]
+                actual_group = group
+                # The second repeated tax-payable row belongs to the
+                # accreted-income/115TD table, not the main tax summary.
+                if key == "tax_payable_refundable" and occurrence > 1:
+                    actual_group = "additional"
+
+                rows.append({
+                    "key": key if occurrence == 1 else f"{key}_{occurrence}",
+                    "label": label,
+                    "value": value,
+                    "currency": "INR",
+                    "formatted_value": f"INR {value:,.2f}",
+                    "row_number": row_number,
+                    "section": table_section,
+                    "group": actual_group,
+                    "is_zero": abs(value) < 0.000001,
+                    "source_label": line,
+                    "source_line_index": index,
+                })
+                break
+
+        return rows
+
     @classmethod
     def extract_amounts(
         cls, text: str, document_type: str = "unknown"
     ) -> list[str]:
-
+        """Return concise, non-zero primary figures for legacy UI consumers."""
         if document_type == "travel":
             fare_data = cls.extract_flight_fare_data(text)
-
             if fare_data:
-                return [
-                    f"INR {value:,.2f}"
-                    for value in fare_data.values()
-                ]
+                return [f"INR {value:,.2f}" for value in fare_data.values()]
+
+        if document_type == "government" and re.search(
+            r"\b(?:income tax return|ITR acknowledgement|acknowledgement number)\b",
+            text, re.I
+        ):
+            rows = cls.extract_itr_financial_rows(text)
+            return [
+                f"{row['label']}: {row['formatted_value']}"
+                for row in rows
+                if row["group"] == "primary" and not row["is_zero"]
+            ]
 
         amounts = set()
-
         for line in text.splitlines():
             if not re.search(
-                r"\b(?:grand total|total amount|amount paid|"
-                r"net amount|subtotal|total|fare|price|amount|"
-                r"charges|salary|gross pay|net pay|balance)\b",
-                line,
-                flags=re.IGNORECASE,
+                r"\b(?:grand total|total amount|amount paid|net amount|"
+                r"subtotal|total|fare|price|amount|charges|salary|"
+                r"gross pay|net pay|balance)\b",
+                line, flags=re.IGNORECASE
             ):
                 continue
-
             for match in cls.CURRENCY_PATTERN.finditer(line):
                 parsed = cls.parse_currency_number(match.group(1))
                 if parsed is None:
                     continue
-
                 prefix = match.group(0)[:-len(match.group(1))].strip()
                 if prefix in {"₹", "Rs", "Rs.", "INR"}:
                     prefix = "INR"
@@ -593,12 +747,11 @@ class DocumentIntelligence:
                     prefix = "EUR"
                 else:
                     prefix = prefix.upper()
-
                 amounts.add(f"{prefix} {parsed:,.2f}")
-
         return sorted(amounts)
 
     # --------------------------------------------------
+
     # FINANCIAL CONSISTENCY ANALYSIS
     # --------------------------------------------------
 
@@ -815,6 +968,20 @@ class DocumentIntelligence:
             "reference_numbers": all_references,
             "roll_numbers": roll_numbers,
         }
+
+        # Rich, label-aware financial rows for the detailed report UI.
+        # Keep the existing "amounts" list for backward compatibility.
+        if document_type == "government" and re.search(
+            r"\b(?:income tax return|ITR acknowledgement|acknowledgement number)\b",
+            normalized_text, re.IGNORECASE
+        ):
+            financial_rows = cls.extract_itr_financial_rows(normalized_text)
+            extracted_information["financial_details"] = {
+                "primary": [row for row in financial_rows if row["group"] == "primary"],
+                "additional": [row for row in financial_rows if row["group"] == "additional"],
+                "all_rows": financial_rows,
+                "note": "Values are transcribed from labelled source rows; arithmetic has not been silently corrected.",
+            }
 
         missing_fields = [
             field

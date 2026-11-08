@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
-  Activity, AlertCircle, ArrowDownToLine, ArrowLeft, ArrowRight, BadgeCheck,
+  Activity, AlertCircle, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck,
   Binary, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp,
   Clock3, CloudUpload, Cpu, Database, File, FileCheck2, FileImage,
   FileSearch, FileText, Fingerprint, Gauge, HardDrive, History, Image as ImageIcon,
-  Info, Layers3, LockKeyhole, Menu, Network, RefreshCw, ScanLine, Search,
+  Info, Layers3, LockKeyhole, LogOut, Menu, Network, RefreshCw, ScanLine, Search,
   Shield, ShieldAlert, ShieldCheck, Sparkles, Upload, X, Zap,
 } from 'lucide-react'
 import { api } from './api'
+import { supabase, supabaseConfigured } from './supabase'
+import { investigationStore } from './investigationStore'
 
 const MAX_BYTES = 15 * 1024 * 1024
 const ACCEPTED = ['.jpg', '.jpeg', '.png', '.webp', '.pdf']
@@ -88,7 +90,7 @@ function SectionTitle({ eyebrow, title, detail, right }) {
   return <div className="section-title"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1>{detail && <p>{detail}</p>}</div>{right}</div>
 }
 
-export default function App() {
+function DashboardApp({ user, onSignOut }) {
   const [page, setPage] = useState('overview')
   const [health, setHealth] = useState(null)
   const [system, setSystem] = useState(null)
@@ -102,11 +104,13 @@ export default function App() {
   const [ocr, setOcr] = useState(null)
   const [originalFile, setOriginalFile] = useState(null)
   const [activeTab, setActiveTab] = useState('summary')
-  const [history, setHistory] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('scamscan.history') || '[]') }
-    catch { return [] }
-  })
+  const [history, setHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(true)
   const [mobileNav, setMobileNav] = useState(false)
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [language, setLanguage] = useState(() => localStorage.getItem('scamscan.language') || 'en')
+  const [showGuide, setShowGuide] = useState(() => localStorage.getItem('scamscan.guide.seen') !== 'yes')
   const inputRef = useRef(null)
 
   const refreshSystem = useCallback(async () => {
@@ -117,7 +121,18 @@ export default function App() {
   }, [])
 
   useEffect(() => { refreshSystem() }, [refreshSystem])
-  useEffect(() => { localStorage.setItem('scamscan.history', JSON.stringify(history.slice(0, 30))) }, [history])
+
+  // Cloud history is reloaded for each authenticated account. RLS also enforces
+  // ownership on the server, even if a client-side filter is bypassed.
+  useEffect(() => {
+    let active = true
+    setHistoryLoading(true)
+    investigationStore.list(user.id)
+      .then((rows) => { if (active) setHistory(rows) })
+      .catch((loadError) => { if (active) setError(`Could not load cloud history: ${loadError.message}`) })
+      .finally(() => { if (active) setHistoryLoading(false) })
+    return () => { active = false }
+  }, [user.id])
 
   const setSelectedFile = (candidate) => {
     setError(''); setResult(null); setOcr(null)
@@ -159,8 +174,8 @@ export default function App() {
       try {
         await saveArchivedReport({
           scan_id: scanId,
-          result: savedResult,
-          ocr: ocrData,
+          owner_user_id: user.id,
+          // Store only the original file locally. Full report/OCR now live in Supabase.
           original_blob: file,
           original_file_name: file.name,
           original_file_type: file.type || 'application/octet-stream',
@@ -175,7 +190,15 @@ export default function App() {
         setError('Analysis completed, but this browser could not save the complete archive. The original file is still available until you leave this report.')
       }
       setResult(savedResult)
-      setHistory((items) => [entry, ...items.filter((item) => item.scan_id !== entry.scan_id)].slice(0, 30))
+      // Store the complete analysis and OCR payload in Supabase JSONB.
+      // The original uploaded file remains local and is never sent to cloud storage.
+      try {
+        const cloudEntry = await investigationStore.save(user.id, savedResult, ocrData)
+        setHistory((items) => [cloudEntry, ...items.filter((item) => item.scan_id !== cloudEntry.scan_id)])
+      } catch (cloudError) {
+        console.error('ScamScan cloud history save:', cloudError)
+        setError(`Analysis completed, but cloud history could not be saved: ${cloudError.message}. Your report remains open on this device.`)
+      }
     } catch (e) {
       setError(e.message || 'Analysis failed. Please try again.')
     } finally { setBusy(false); setStage('') }
@@ -184,35 +207,32 @@ export default function App() {
   const openHistoryItem = async (item) => {
     setError('')
     try {
-      const archived = await readArchivedReport(item.scan_id)
-      if (!archived?.result) {
-        setError(`“${item.filename}” is an older history entry. Its original report was not saved, so it cannot be reconstructed without running a new scan.`)
-        setPage('history')
-        return
-      }
-      setResult(archived.result)
-      setOcr(archived.ocr || null)
-      if (archived.original_blob) {
-        try {
+      // Fetch report JSON from the authenticated user's cloud archive.
+      const cloudRecord = await investigationStore.get(user.id, item.scan_id)
+      setResult(cloudRecord.report)
+      setOcr(cloudRecord.ocr || null)
+
+      // Original document bytes are deliberately not uploaded. Restore them
+      // only if this browser still has the local IndexedDB copy.
+      try {
+        const localRecord = await readArchivedReport(item.scan_id)
+        if (localRecord?.owner_user_id === user.id && localRecord?.original_blob) {
           const restoredFile = new File(
-            [archived.original_blob],
-            archived.original_file_name || item.filename || 'original-document',
+            [localRecord.original_blob],
+            localRecord.original_file_name || item.filename || 'original-document',
             {
-              type: archived.original_file_type || archived.original_blob.type || 'application/octet-stream',
-              lastModified: archived.original_last_modified || Date.now(),
+              type: localRecord.original_file_type || localRecord.original_blob.type || 'application/octet-stream',
+              lastModified: localRecord.original_last_modified || Date.now(),
             }
           )
           setOriginalFile(restoredFile)
-        } catch {
-          setOriginalFile(archived.original_blob)
-        }
-      } else {
-        setOriginalFile(null)
-      }
+        } else setOriginalFile(null)
+      } catch { setOriginalFile(null) }
+
       setActiveTab('summary')
       setPage('results')
-    } catch (storageError) {
-      setError(`Could not open this saved report: ${storageError.message}`)
+    } catch (cloudError) {
+      setError(`Could not open this cloud report: ${cloudError.message}`)
       setPage('history')
     }
   }
@@ -244,12 +264,17 @@ export default function App() {
   }
 
   const clearHistory = async () => {
-    if (!window.confirm('Clear all locally saved scan history and full reports from this browser?')) return
-    try { await clearArchivedReports() }
-    catch (storageError) { console.error('ScamScan archive clear:', storageError) }
-    setHistory([])
+    if (!window.confirm('Permanently delete all cloud investigations belonging to your account? This cannot be undone.')) return
+    try {
+      await investigationStore.clear(user.id)
+      setHistory([])
+      setError('')
+    } catch (deleteError) {
+      setError(`Could not clear cloud history: ${deleteError.message}`)
+    }
   }
 
+  const setAppLanguage = (value) => { setLanguage(value); localStorage.setItem('scamscan.language', value) }
   const pageTitle = page === 'overview' ? 'Overview' : page === 'new-scan' ? 'New investigation' : page === 'history' ? 'Scan history' : 'Analysis report'
 
   return (
@@ -277,7 +302,21 @@ export default function App() {
       <main className="main-area">
         <header className="topbar">
           <div className="topbar-left"><button className="mobile-menu icon-button" onClick={() => setMobileNav(true)} aria-label="Open menu"><Menu size={19} /></button><div className="breadcrumb">Workspace <ChevronRight size={13} /> <strong>{pageTitle}</strong></div></div>
-          <div className="topbar-right"><div className="live-indicator"><span className={`status-dot ${health ? 'online' : 'offline'}`} />{health ? 'SYSTEM OPERATIONAL' : 'API DISCONNECTED'}</div><div className="avatar">S</div></div>
+          <div className="topbar-right"><select className="language-select" aria-label="Select language" value={language} onChange={e => setAppLanguage(e.target.value)}><option value="en">English</option><option value="hi">हिंदी</option><option value="gu">ગુજરાતી</option></select><button className="help-trigger" onClick={() => setHelpOpen(true)}><CircleHelp size={15}/> Help & manual</button><div className="live-indicator"><span className={`status-dot ${health ? 'online' : 'offline'}`} />{health ? 'SYSTEM OPERATIONAL' : 'API DISCONNECTED'}</div><div className="account-menu-wrap">
+            <button className={`account-trigger ${accountMenuOpen ? 'is-open' : ''}`} onClick={() => setAccountMenuOpen(v => !v)} aria-expanded={accountMenuOpen} aria-haspopup="menu" title="Account options">
+              <span className="avatar">{(user?.email || 'U').slice(0,1).toUpperCase()}</span>
+              <span className="account-trigger-copy"><strong>Account</strong><small>{user?.email}</small></span>
+              <ChevronDown size={15} className="account-chevron" />
+            </button>
+            {accountMenuOpen && <>
+              <button className="account-menu-dismiss" aria-label="Close account menu" onClick={() => setAccountMenuOpen(false)} />
+              <div className="account-dropdown" role="menu">
+                <div className="account-dropdown-head"><span className="avatar">{(user?.email || 'U').slice(0,1).toUpperCase()}</span><div><strong>Signed in</strong><small>{user?.email}</small></div></div>
+                <div className="account-dropdown-divider" />
+                <button className="account-signout-action" role="menuitem" onClick={() => { setAccountMenuOpen(false); onSignOut() }}><LogOut size={16}/><span>Sign out</span><small>End this secure session</small></button>
+              </div>
+            </>}
+          </div></div>
         </header>
 
         <div className="page-content">
@@ -285,13 +324,32 @@ export default function App() {
             {page === 'overview' && <motion.div key="overview" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: .2 }}><Overview health={health} system={system} history={history} onNew={() => { setPage('new-scan'); setError('') }} onHistory={() => setPage('history')} /></motion.div>}
             {page === 'new-scan' && <motion.div key="new" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: .2 }}><NewScan file={file} setSelectedFile={setSelectedFile} dragging={dragging} setDragging={setDragging} inputRef={inputRef} busy={busy} stage={stage} error={error} onAnalyze={runAnalysis} onClear={() => { setFile(null); setError(''); if (inputRef.current) inputRef.current.value = '' }} /></motion.div>}
             {page === 'results' && result && <motion.div key="results" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: .2 }}><Results result={result} ocr={ocr} activeTab={activeTab} setActiveTab={setActiveTab} onBack={() => setPage('history')} originalFile={originalFile} onOpenOriginal={openOriginalDocument} /></motion.div>}
-            {page === 'history' && <motion.div key="history" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: .2 }}><HistoryPage history={history} onNew={() => setPage('new-scan')} onClear={clearHistory} onOpen={openHistoryItem} error={error} /></motion.div>}
+            {page === 'history' && <motion.div key="history" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: .2 }}><HistoryPage history={history} loading={historyLoading} onNew={() => setPage('new-scan')} onClear={clearHistory} onOpen={openHistoryItem} error={error} /></motion.div>}
           </AnimatePresence>
         </div>
-        <footer className="footer"><span>SCAMSCAN INTELLIGENCE ENGINE <i>•</i> RULE-BASED ANALYSIS</span><span>SCAN. INVESTIGATE. VERIFY.</span></footer>
+        <footer className="footer"><span>SCAMSCAN INTELLIGENCE ENGINE <i>•</i> RULE-BASED ANALYSIS</span><span>Built by the ScamScan team · <button className="footer-link" onClick={() => setHelpOpen(true)}>Help / Credits</button></span></footer>
       </main>
+      {helpOpen && <HelpCentre onClose={() => setHelpOpen(false)} /> }
+      {showGuide && <GuideModal onClose={() => { setShowGuide(false); localStorage.setItem('scamscan.guide.seen','yes') }} /> }
     </div>
   )
+}
+
+function GuideModal({ onClose }) {
+  return <div className="scam-modal-backdrop" role="presentation"><section className="scam-modal guide-modal" role="dialog" aria-modal="true" aria-labelledby="guide-title"><button className="modal-x" onClick={onClose} aria-label="Close guide"><X size={18}/></button><div className="eyebrow">WELCOME / QUICK START</div><h2 id="guide-title">Your first investigation</h2><p className="modal-intro">A short guide to using ScamScan responsibly.</p><div className="guide-steps"><article><b>01</b><div><strong>Upload a document</strong><p>Open New investigation and select a JPG, JPEG, PNG, WEBP or PDF file (up to 15 MB).</p></div></article><article><b>02</b><div><strong>Run the inspection</strong><p>ScamScan extracts available text and checks supported image or PDF technical indicators.</p></div></article><article><b>03</b><div><strong>Review the evidence</strong><p>Read findings, limitations and extracted information. A score is review priority, not a fraud probability.</p></div></article><article><b>04</b><div><strong>Export and verify</strong><p>Export the report and independently confirm important documents with the issuing organization.</p></div></article></div><button className="primary-button modal-primary" onClick={onClose}>Start using ScamScan <ArrowRight size={15}/></button></section></div>
+}
+
+function HelpCentre({ onClose }) {
+  const [issue, setIssue] = useState('');
+  const [details, setDetails] = useState('');
+  const [tab, setTab] = useState('manual');
+  const sendReport = (e) => { e.preventDefault(); const subject = encodeURIComponent(`[ScamScan bug] ${issue || 'Issue report'}`); const body = encodeURIComponent(`Issue: ${issue}\n\nDetails:\n${details}\n\nBrowser: ${navigator.userAgent}`); window.location.href = `mailto:aryaniiitnr@gmail.com?subject=${subject}&body=${body}`; };
+  return <div className="scam-modal-backdrop" role="presentation"><section className="scam-modal help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title"><button className="modal-x" onClick={onClose} aria-label="Close help"><X size={18}/></button><div className="eyebrow">SCAMSCAN / SUPPORT</div><h2 id="help-title">Help centre</h2><div className="help-tabs"><button className={tab==='manual'?'active':''} onClick={()=>setTab('manual')}>User manual</button><button className={tab==='faq'?'active':''} onClick={()=>setTab('faq')}>FAQ & limitations</button><button className={tab==='bug'?'active':''} onClick={()=>setTab('bug')}>Report a bug</button><button className={tab==='team'?'active':''} onClick={()=>setTab('team')}>Team credits</button></div>
+  {tab==='manual' && <div className="help-content"><h3>How to investigate a document</h3><ol><li>Choose <b>New investigation</b> from the left navigation.</li><li>Upload a supported image or PDF file and check the filename before analysis.</li><li>Select <b>Run analysis</b>. Keep the page open while OCR and forensic checks run.</li><li>Use Summary, Extracted data, Forensic evidence and Findings tabs to review output.</li><li>Use <b>Export PDF</b> to save a report. Scan history is stored in this browser only.</li></ol><h3>Privacy reminder</h3><p>Do not upload documents unless you are authorized to process them. Avoid sharing sensitive personal, financial or identity information.</p></div>}
+  {tab==='faq' && <div className="help-content"><h3>What files are supported?</h3><p>JPG, JPEG, PNG, WEBP and PDF. Current upload limit is 15 MB.</p><h3>Does a low score prove a document is genuine?</h3><p>No. The score is a rule-based review-priority indicator, not a probability of fraud or an authenticity verdict.</p><h3>Are my reports stored online?</h3><p>No cloud report storage is configured. Complete reports and originals are stored in this browser's IndexedDB.</p><h3>Does OCR work on scanned PDFs?</h3><p>The current backend does not implement OCR for scanned/image-only PDFs.</p></div>}
+  {tab==='bug' && <form className="bug-form" onSubmit={sendReport}><label>Issue type<input value={issue} onChange={e=>setIssue(e.target.value)} placeholder="e.g. Upload failed" required/></label><label>What happened?<textarea value={details} onChange={e=>setDetails(e.target.value)} rows="4" placeholder="Steps to reproduce and any error message…" required/></label><p className="muted-copy">This opens your email application with a prefilled report; it does not silently upload data.</p><button className="primary-button" type="submit">Prepare bug report <ArrowUpRight size={15}/></button></form>}
+  {tab==='team' && <div className="help-content"><h3>Built for evidence-led investigation</h3><p><b>Project lead:</b> Aryan Gupta</p><p><b>Team:</b> ScamScan development team</p><h3>Contact</h3><p><a href="mailto:aryaniiitnr@gmail.com">aryaniiitnr@gmail.com</a></p><p><a href="tel:+919978025098">+91 99780 25098</a></p></div>}
+  <div className="help-modal-foot"><span>SCAMSCAN 2.0 · IIIT NAYA RAIPUR</span><button className="secondary-button small" onClick={onClose}>Close</button></div></section></div>
 }
 
 function Overview({ health, system, history, onNew, onHistory }) {
@@ -1160,12 +1218,250 @@ function FindingCard({ finding }) {
 }
 function Limitations({ items }) { return items.length ? <div className="limitations-list"><div className="subsection-title">MODULE LIMITATIONS</div>{items.map((item, i) => <div className="limitation-item" key={i}><Info size={13} /><span>{item}</span></div>)}</div> : null }
 
-function HistoryPage({ history, onNew, onClear, onOpen, error }) {
+function HistoryPage({ history, loading, onNew, onClear, onOpen, error }) {
   const [query, setQuery] = useState('')
   const filtered = useMemo(() => history.filter((item) => item.filename?.toLowerCase().includes(query.toLowerCase())), [history, query])
-  return <><SectionTitle eyebrow="WORKSPACE / ARCHIVE" title="Scan history" detail="A local record of completed investigations in this browser." right={<div className="history-actions">{history.length > 0 && <button className="secondary-button" onClick={onClear}>Clear history</button>}<button className="primary-button" onClick={onNew}><ScanLine size={15} /> New investigation</button></div>} />
+  return <><SectionTitle eyebrow="WORKSPACE / ARCHIVE" title="Scan history" detail="Your private cloud archive. Only your authenticated account can access these reports." right={<div className="history-actions">{history.length > 0 && <button className="secondary-button" onClick={onClear}>Clear history</button>}<button className="primary-button" onClick={onNew}><ScanLine size={15} /> New investigation</button></div>} />
     {error && <div className="info-banner"><Info size={15} />{error}</div>}
-    <section className="panel history-panel"><div className="history-toolbar"><div className="history-count">{history.length} <span>saved scans</span></div><div className="search-box"><Search size={15} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by filename…" /></div></div>{filtered.length ? <div className="history-table-wrap"><table className="history-table"><thead><tr><th>DOCUMENT</th><th>DATE</th><th>FILE SIZE</th><th>REVIEW PRIORITY</th><th>FINDINGS</th><th /></tr></thead><tbody>{filtered.map((item) => <tr key={item.scan_id}><td><div className="history-file"><FileText size={17} /><span><strong>{item.filename}</strong><small>{item.file_type?.toUpperCase() || 'FILE'} · {item.has_report === true ? 'FULL REPORT SAVED' : 'METADATA ONLY'}</small></span></div></td><td>{dateLabel(item.created_at)}</td><td>{formatBytes(item.file_size_bytes)}</td><td><span className={`mini-risk ${riskTone(item.risk_level)}`}>{titleCase(item.risk_level)}</span></td><td>{item.finding_count ?? '—'}</td><td><button className="icon-button" onClick={() => onOpen(item)} title={item.has_report === false ? "Full report was not saved" : "Open full saved report"}><ArrowRight size={16} /></button></td></tr>)}</tbody></table></div> : <EmptyState icon={History} title={query ? 'No matching scans' : 'Your archive is empty'} detail={query ? 'Try another filename.' : 'Completed analysis summaries will be saved here on this device.'} action={!query && <button className="secondary-button small" onClick={onNew}>Start an investigation</button>} />}</section>
-    <div className="disclaimer-strip"><Info size={15} /><span>History summaries, complete OCR and forensic reports, and original uploaded files are saved locally in this browser's IndexedDB. You can reopen saved reports and original documents from this device. Older entries created before original-file archiving may contain report data only.</span></div>
+    <section className="panel history-panel"><div className="history-toolbar"><div className="history-count">{history.length} <span>saved scans</span></div><div className="search-box"><Search size={15} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by filename…" /></div></div>{loading ? <div className="empty-state"><span className="empty-icon"><RefreshCw size={22}/></span><h3>Loading secure archive</h3><p>Retrieving your private investigations…</p></div> : filtered.length ? <div className="history-table-wrap"><table className="history-table"><thead><tr><th>DOCUMENT</th><th>DATE</th><th>FILE SIZE</th><th>REVIEW PRIORITY</th><th>FINDINGS</th><th /></tr></thead><tbody>{filtered.map((item) => <tr key={item.scan_id}><td><div className="history-file"><FileText size={17} /><span><strong>{item.filename}</strong><small>{item.file_type?.toUpperCase() || 'FILE'} · {item.has_report === true ? 'FULL REPORT SAVED' : 'METADATA ONLY'}</small></span></div></td><td>{dateLabel(item.created_at)}</td><td>{formatBytes(item.file_size_bytes)}</td><td><span className={`mini-risk ${riskTone(item.risk_level)}`}>{titleCase(item.risk_level)}</span></td><td>{item.finding_count ?? '—'}</td><td><button className="icon-button" onClick={() => onOpen(item)} title={item.has_report === false ? "Full report was not saved" : "Open full saved report"}><ArrowRight size={16} /></button></td></tr>)}</tbody></table></div> : <EmptyState icon={History} title={query ? 'No matching scans' : 'Your archive is empty'} detail={query ? 'Try another filename.' : 'Completed investigation reports will appear here after your first cloud save.'} action={!query && <button className="secondary-button small" onClick={onNew}>Start an investigation</button>} />}</section>
+    <div className="disclaimer-strip"><Info size={15} /><span>Full analysis and OCR reports are stored in your private Supabase account and protected by Row Level Security. Original uploaded documents remain local to this browser and are not uploaded.</span></div>
   </>
 }
+
+
+function GoogleMark() {
+  return <svg className="brand-logo google-logo" viewBox="0 0 48 48" aria-hidden="true">
+    <path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.7c3.9-3.6 6-8.8 6-15Z"/>
+    <path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.9l-6.7-5.1c-1.9 1.3-4.1 2.1-6.8 2.1-5.2 0-9.6-3.5-11.2-8.2H5.9v5.2A20 20 0 0 0 24 44Z"/>
+    <path fill="#FBBC05" d="M12.8 27.9a12 12 0 0 1 0-7.8v-5.2H5.9a20 20 0 0 0 0 18.2l6.9-5.2Z"/>
+    <path fill="#EA4335" d="M24 11.9c3 0 5.7 1 7.8 3.1l5.9-5.9C34.1 5.8 29.5 4 24 4A20 20 0 0 0 5.9 14.9l6.9 5.2c1.6-4.7 6-8.2 11.2-8.2Z"/>
+  </svg>
+}
+function GitHubMark() {
+  return <svg className="brand-logo github-logo" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.5 21.6c.6.1.8-.2.8-.6v-2.1c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.1 1.7 1.1 1 .1.7 2.2 3.8 1.5.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.3.8 1 .8 2v3c0 .4.2.7.8.6A11.1 11.1 0 0 0 12 .9Z"/>
+  </svg>
+}
+function AppleMark() {
+  return <svg className="brand-logo apple-logo" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="currentColor" d="M16.7 12.8c0-2.2 1.8-3.3 1.9-3.4a4.1 4.1 0 0 0-3.2-1.7c-1.4-.2-2.7.8-3.4.8-.7 0-1.8-.8-3-.8a4.5 4.5 0 0 0-3.8 2.3c-1.6 2.8-.4 6.9 1.1 9.1.7 1.1 1.6 2.3 2.7 2.2 1.1 0 1.5-.7 2.9-.7 1.3 0 1.7.7 2.9.7 1.2 0 1.9-1.1 2.6-2.2a10 10 0 0 0 1.2-2.5 3.9 3.9 0 0 1-1.9-3.8ZM14.5 6.3a4 4 0 0 0 .9-2.9 4.2 4.2 0 0 0-2.7 1.4 3.8 3.8 0 0 0-.9 2.8 3.5 3.5 0 0 0 2.7-1.3Z"/>
+  </svg>
+}
+function MicrosoftMark() {
+  return <svg className="brand-logo microsoft-logo" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="#F25022" d="M1 1h10v10H1z"/><path fill="#7FBA00" d="M13 1h10v10H13z"/>
+    <path fill="#00A4EF" d="M1 13h10v10H1z"/><path fill="#FFB900" d="M13 13h10v10H13z"/>
+  </svg>
+}
+
+
+function AuthScreen() {
+  const [mode, setMode] = useState('signin')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [devNotice, setDevNotice] = useState('')
+
+  const changeMode = (next) => { setMode(next); setError(''); setMessage('') }
+  const run = async (action) => {
+    setBusy(true); setError(''); setMessage('')
+    try { await action() }
+    catch (e) { setError(e.message || 'Authentication failed. Please try again.') }
+    finally { setBusy(false) }
+  }
+
+  const submitEmail = (event) => {
+    event.preventDefault()
+    if (!email.trim()) return setError('Enter your email address.')
+    if (mode !== 'reset' && password.length < 8) return setError('Use a password with at least 8 characters.')
+    run(async () => {
+      if (mode === 'signup') {
+        const { error: authError } = await supabase.auth.signUp({
+          email: email.trim(), password,
+          options: { emailRedirectTo: window.location.origin }
+        })
+        if (authError) throw authError
+        setMessage('Account created. Check your email for a verification link before signing in.')
+      } else if (mode === 'reset') {
+        const { error: authError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: `${window.location.origin}/`
+        })
+        if (authError) throw authError
+        setMessage('If an account exists for this email, a password-reset link has been sent.')
+      } else {
+        const { error: authError } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+        if (authError) throw authError
+      }
+    })
+  }
+
+  const oauth = (provider) => {
+    // Apple and Microsoft are intentionally marked as in development.
+    // Google and GitHub continue using the configured Supabase OAuth flow.
+    if (provider === 'apple' || provider === 'azure') {
+      setDevNotice(provider)
+      return
+    }
+
+    run(async () => {
+      const { error: authError } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo: window.location.origin }
+      })
+      if (authError) throw authError
+    })
+  }
+
+  const isReset = mode === 'reset'
+  const isSignup = mode === 'signup'
+
+  return <main className="auth-shell">
+    <div className="auth-noise" aria-hidden="true" />
+    <div className="auth-ambient auth-ambient-one" /><div className="auth-ambient auth-ambient-two" />
+    <div className="auth-topline"><div className="auth-brand">
+      <div className="auth-brand-mark"><Fingerprint size={25}/><span className="brand-mark-sweep"/></div>
+      <div><strong>SCAM<span>SCAN</span></strong><small>DIGITAL TRUST INTELLIGENCE</small></div>
+    </div><div className="auth-top-status"><span className="auth-live-dot"/> FORENSIC ENVIRONMENT <b>SECURE</b></div></div>
+
+    <div className="auth-layout">
+      <section className="auth-card">
+        <div className="auth-card-top"><span className="auth-step">{isReset ? 'ACCOUNT RECOVERY' : isSignup ? 'NEW INVESTIGATION ID' : 'IDENTITY VERIFICATION'}</span><span className="auth-encryption"><LockKeyhole size={12}/> 256-BIT ENCRYPTION</span></div>
+        <div className="auth-eyebrow"><span/> SECURE FORENSIC WORKSPACE</div>
+        <h1>{isSignup ? <>Build your<br/><em>secure workspace.</em></> : isReset ? <>Regain your<br/><em>access.</em></> : <>Welcome to<br/><em>the investigation.</em></>}</h1>
+        <p className="auth-subtitle">{isSignup ? 'Create your identity to start examining documents with confidence.' : isReset ? 'A secure recovery link will be sent to your registered email.' : 'Sign in to access your digital evidence and forensic workspace.'}</p>
+
+        {!isReset && <>
+          <div className="auth-social-heading"><span>CONTINUE WITH YOUR IDENTITY PROVIDER</span><i/></div>
+          <div className="oauth-grid">
+            <button type="button" className="oauth-button" onClick={() => oauth('google')} disabled={busy || !supabaseConfigured}><GoogleMark/><span>Continue with Google</span><ArrowUpRightIcon/></button>
+            <button type="button" className="oauth-button" onClick={() => oauth('github')} disabled={busy || !supabaseConfigured}><GitHubMark/><span>Continue with GitHub</span><ArrowUpRightIcon/></button>
+            <button type="button" className="oauth-button" onClick={() => oauth('apple')} disabled={busy || !supabaseConfigured}><AppleMark/><span>Continue with Apple</span><ArrowUpRightIcon/></button>
+            <button type="button" className="oauth-button" onClick={() => oauth('azure')} disabled={busy || !supabaseConfigured}><MicrosoftMark/><span>Continue with Microsoft</span><ArrowUpRightIcon/></button>
+          </div>
+        </>}
+        <div className="auth-divider"><span/>{isReset ? 'EMAIL RECOVERY' : 'OR USE EMAIL CREDENTIALS'}<span/></div>
+        {!supabaseConfigured && <div className="auth-alert error"><AlertCircle size={15}/><span>Supabase is not connected yet. Add your project URL and publishable/anon key to <code>.env</code>, then restart Vite.</span></div>}
+        <form className="auth-form" onSubmit={submitEmail}>
+          <label>Email address<div className="auth-input-wrap"><span className="auth-input-icon"><AtSignIcon/></span><input type="email" autoComplete="email" placeholder="name@company.com" value={email} onChange={e=>setEmail(e.target.value)} required/></div></label>
+          {!isReset && <label>Password<div className="auth-input-wrap"><span className="auth-input-icon"><LockKeyhole size={16}/></span><input type="password" autoComplete={isSignup ? 'new-password' : 'current-password'} placeholder="Minimum 8 characters" value={password} onChange={e=>setPassword(e.target.value)} minLength={8} required/></div></label>}
+          {mode === 'signin' && <button className="auth-forgot" type="button" onClick={()=>changeMode('reset')}>Forgot password? <ArrowUpRightIcon/></button>}
+          {error && <div className="auth-alert error"><AlertCircle size={15}/><span>{error}</span></div>}
+          {message && <div className="auth-alert success"><CheckCircle2 size={15}/><span>{message}</span></div>}
+          <button className="auth-submit" type="submit" disabled={busy || !supabaseConfigured}>
+            <span>{busy ? <><span className="auth-button-spinner"/> Securing your session…</> : isSignup ? 'Create secure account' : isReset ? 'Send recovery link' : 'Enter secure workspace'}</span>
+            {!busy && <ArrowRight size={17}/>}
+          </button>
+        </form>
+        <div className="auth-switch">
+          {isReset ? <button onClick={()=>changeMode('signin')}><ArrowLeft size={14}/> Return to sign in</button> : isSignup ? <>Already have an identity? <button onClick={()=>changeMode('signin')}>Sign in <ArrowRight size={13}/></button></> : <>New to ScamScan? <button onClick={()=>changeMode('signup')}>Create an account <ArrowRight size={13}/></button></>}
+        </div>
+        <div className="auth-foot"><ShieldCheck size={14}/><span>Identity secured by Supabase <i/> Your documents stay in your local workspace.</span></div>
+      </section>
+
+      <section className="auth-showcase">
+        <div className="showcase-grid" aria-hidden="true"/>
+        <div className="showcase-kicker"><span className="kicker-line"/> THE SCIENCE OF DIGITAL TRUST <span className="kicker-index">01 / 04</span></div>
+        <div className="forensic-visual" aria-label="Animated forensic fingerprint visualization">
+          <div className="visual-halo halo-a"/><div className="visual-halo halo-b"/><div className="visual-orbit orbit-a"/><div className="visual-orbit orbit-b"/><div className="visual-orbit orbit-c"/>
+          <div className="visual-crosshair crosshair-x"/><div className="visual-crosshair crosshair-y"/>
+          <div className="visual-fingerprint"><Fingerprint size={112} strokeWidth={1.15}/></div>
+          <div className="visual-scan-beam"/>
+          <span className="visual-particle particle-a"/><span className="visual-particle particle-b"/><span className="visual-particle particle-c"/><span className="visual-particle particle-d"/>
+          <div className="visual-coordinate coord-a">LAT 04.812 / SIG 98.2</div><div className="visual-coordinate coord-b">TRACE / 0x7A91</div>
+          <div className="visual-readout"><span>BIOMETRIC PATTERN</span><strong>ANALYSIS READY</strong><i/></div>
+        </div>
+        <div className="showcase-copy"><div className="showcase-overline">DOCUMENT FORENSICS <span>×</span> DIGITAL INTELLIGENCE</div>
+          <h2>See what the<br/>document <em>doesn't say.</em></h2>
+          <p>Go beyond the visible. Extract information, inspect technical signals, and make better-informed evidence reviews.</p>
+          <div className="showcase-capabilities"><div><Fingerprint size={16}/><span>PIXEL-LEVEL<br/><b>IMAGE SIGNALS</b></span></div><div><Binary size={16}/><span>TEXT & DATA<br/><b>INTELLIGENCE</b></span></div><div><ShieldCheck size={16}/><span>EXPLAINABLE<br/><b>RISK REVIEW</b></span></div></div>
+        </div>
+        <div className="showcase-footer"><span>SCAMSCAN INTELLIGENCE ENGINE</span><span>SCAN. INVESTIGATE. VERIFY.</span></div>
+      </section>
+    </div>
+    <AnimatePresence>
+      {devNotice && (
+        <motion.div
+          className="auth-dev-notice"
+          style={{
+            position: 'fixed', bottom: '30px', left: '50%',
+            transform: 'translateX(-50%)', zIndex: 9999,
+            display: 'flex', alignItems: 'center', gap: '14px',
+            width: 'min(420px, calc(100vw - 32px))', boxSizing: 'border-box',
+            padding: '15px 18px', borderRadius: '15px',
+            border: '1px solid rgba(167,139,250,0.38)',
+            background: 'rgba(18, 17, 29, 0.96)',
+            backdropFilter: 'blur(18px)',
+            boxShadow: '0 16px 50px rgba(0,0,0,0.48)', color: '#fff'
+          }}
+          role="status"
+          aria-live="polite"
+          initial={{ opacity: 0, y: 28, scale: 0.94 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 20, scale: 0.96 }}
+          transition={{ type: 'spring', stiffness: 260, damping: 22 }}
+        >
+          <motion.span
+            className="auth-dev-notice-icon"
+            style={{ color: '#b7a0ff', fontSize: '27px', lineHeight: 1, flexShrink: 0 }}
+            animate={{ rotate: 360 }}
+            transition={{ duration: 4, repeat: Infinity, ease: 'linear' }}
+            aria-hidden="true"
+          >
+            ◈
+          </motion.span>
+          <span className="auth-dev-notice-copy" style={{ display: 'grid', gap: '5px', flex: 1, minWidth: 0 }}>
+            <strong style={{ color: '#c4b5fd', fontSize: '12px', letterSpacing: '1.1px' }}>DEVELOPMENT IN PROCESS</strong>
+            <small style={{ color: '#aaa6b8', fontSize: '12px' }}>{devNotice === 'apple' ? 'Apple' : 'Microsoft'} authentication is coming soon.</small>
+          </span>
+          <button
+            type="button"
+            className="auth-dev-notice-close"
+            style={{ background: 'transparent', border: 0, color: '#aaa6b8', cursor: 'pointer', fontSize: '23px', lineHeight: 1, padding: '2px 5px' }}
+            onClick={() => setDevNotice('')}
+            aria-label="Dismiss notification"
+          >
+            ×
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
+
+    <div className="auth-bottomline"><span>© SCAMSCAN 2.0</span><span>DESIGNED FOR EVIDENCE-LED INVESTIGATION</span><span>BUILD 02.11 <i/></span></div>
+  </main>
+}
+
+function ArrowUpRightIcon() { return <svg className="oauth-arrow" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 12 12 4M5 4h7v7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg> }
+function AtSignIcon() { return <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="7.2" stroke="currentColor" strokeWidth="1.4"/><path d="M13.2 10.1c0 1.7-.8 2.6-2 2.6-1.5 0-2.6-1.1-2.6-2.8 0-1.8 1.1-3 2.6-3 1.1 0 2 .8 2 2.2v1.6c0 1.3.6 2 1.5 2 1.1 0 1.9-1.1 1.9-2.8A6.6 6.6 0 1 0 10 16.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg> }
+
+function App() {
+  const [session, setSession] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!alive) return
+      if (error) console.error('Supabase session:', error.message)
+      setSession(data?.session ?? null)
+      setLoading(false)
+    })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+      setLoading(false)
+    })
+    return () => { alive = false; listener.subscription.unsubscribe() }
+  }, [])
+
+  const signOut = async () => {
+    const { error } = await supabase.auth.signOut()
+    if (error) window.alert(error.message)
+  }
+
+  if (loading) return <div className="auth-loading"><div className="auth-loader"><Fingerprint size={34}/></div><span>INITIALIZING SECURE SESSION</span></div>
+  if (!session) return <AuthScreen/>
+  return <DashboardApp user={session.user} onSignOut={signOut}/>
+}
+
+export default App
