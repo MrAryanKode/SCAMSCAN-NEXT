@@ -215,13 +215,13 @@ flowchart TD
 <tr><td>🛡️ File signature validation</td><td>✅ Implemented</td></tr>
 <tr><td>🔍 Tesseract OCR integration</td><td>✅ Implemented</td></tr>
 <tr><td>📑 Multi-page PDF text extraction</td><td>✅ Implemented</td></tr>
-<tr><td>🧠 Structured document intelligence</td><td>🔄 Planned</td></tr>
-<tr><td>⚖️ Document consistency engine</td><td>🔄 Planned</td></tr>
-<tr><td>🔬 Image forensic engine</td><td>🔄 Planned</td></tr>
-<tr><td>📊 Evidence-based risk engine</td><td>🔄 Planned</td></tr>
-<tr><td>🤖 AI forensic assistant</td><td>🔄 Planned</td></tr>
-<tr><td>🌐 Frontend dashboard</td><td>🔄 Planned</td></tr>
-<tr><td>🔐 Authentication and user workspace</td><td>🔄 Planned</td></tr>
+<tr><td>🧠 Structured document intelligence</td><td>✅ Implemented </td></tr>
+<tr><td>⚖️ Document consistency engine</td><td>✅ Implemented</td></tr>
+<tr><td>🔬 Image forensic engine</td><td>✅ Implemented</td></tr>
+<tr><td>📊 Evidence-based risk engine</td><td>✅ Implemented</td></tr>
+<tr><td>🤖 AI forensic assistant</td><td>✅ Implemented</td></tr>
+<tr><td>🌐 Frontend dashboard</td><td>✅ Implemented</td></tr>
+<tr><td>🔐 Authentication and user workspace</td><td>✅ Implemented</td></tr>
 </table>
 
 ---
